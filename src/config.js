@@ -43,6 +43,25 @@ function bool(name, fallback) {
   return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
 }
 
+export const ACCOUNT_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/i;
+
+function accountList(value) {
+  const names = (value || '')
+    .split(',')
+    .map((n) => n.trim())
+    .filter(Boolean);
+  for (const n of names) {
+    if (!ACCOUNT_NAME_RE.test(n)) throw new Error(`Invalid account name "${n}" in BRIDGE_ACCOUNTS (use letters, digits, - and _).`);
+  }
+  return [...new Set(names.filter((n) => n.toLowerCase() !== 'default'))];
+}
+
+/** Browser profile directory for an account. */
+export function profileDirFor(config, account) {
+  if (!account || account === 'default') return config.profileDir;
+  return path.join(config.profilesRoot, account);
+}
+
 function chatMode(value) {
   const v = (value || 'keep').toLowerCase();
   if (v === 'keep' || v === 'temporary') return v;
@@ -64,7 +83,12 @@ export function loadConfig(overrides = {}) {
     // Fail requests if the requested model can't be selected, instead of using whatever is active.
     strictModel: bool('GEMINI_STRICT_MODEL', true),
 
+    // Browser profile of the "default" account.
     profileDir: env.BRIDGE_PROFILE_DIR || path.join(os.homedir(), '.gemini-chat-bridge', 'profile'),
+    // Extra accounts, each with its own browser profile under profilesRoot/<name>.
+    // Pick one per request with model "<model id>@<name>".
+    accounts: accountList(env.BRIDGE_ACCOUNTS),
+    profilesRoot: env.BRIDGE_PROFILES_ROOT || path.join(os.homedir(), '.gemini-chat-bridge', 'profiles'),
     // Connect to a Chrome you already run with --remote-debugging-port instead of launching one.
     cdpUrl: env.BRIDGE_CDP_URL || '',
     // "chrome" uses your installed Google Chrome; empty uses Playwright's Chromium.
@@ -86,6 +110,8 @@ export function loadConfig(overrides = {}) {
     responseTimeoutMs: int('BRIDGE_RESPONSE_TIMEOUT_MS', 10 * 60 * 1000),
     // Continue an existing Gemini chat when a request extends a conversation the bridge already answered.
     reuseChats: bool('BRIDGE_REUSE_CHATS', true),
+    // Ask the model once more, in the same chat, when a reply looks like a botched tool call.
+    toolRetry: bool('BRIDGE_TOOL_RETRY', true),
     maxPromptChars: int('BRIDGE_MAX_PROMPT_CHARS', 200_000),
     maxImages: int('BRIDGE_MAX_IMAGES', 10),
     maxImageBytes: int('BRIDGE_MAX_IMAGE_MB', 20) * 1024 * 1024,

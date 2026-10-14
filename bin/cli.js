@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import readline from 'node:readline/promises';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, profileDirFor } from '../src/config.js';
+import { AccountPool } from '../src/accounts.js';
 import { loadSelectors } from '../src/selectors.js';
 import { GeminiChat } from '../src/gemini.js';
 import { createServer } from '../src/server.js';
@@ -10,16 +11,23 @@ const log = (msg) => console.error(`[bridge ${new Date().toISOString().slice(11,
 const HELP = `gemini-chat-bridge: local OpenAI-compatible API on top of your own Gemini web chat.
 
 Usage:
-  gemini-chat-bridge login    Open a browser window so you can sign in to Gemini (once).
-  gemini-chat-bridge serve    Start the API server (default).
+  gemini-chat-bridge login [account]   Open a browser window to sign in to Gemini (once per account).
+  gemini-chat-bridge serve             Start the API server (default).
+  gemini-chat-bridge accounts          List configured accounts.
 
 Configuration is via environment variables; see README.md.
 
 This is an unofficial tool. Automating the Gemini web app is very likely against
 Google's terms and may get your account's Gemini access restricted. Use at your own risk.`;
 
-async function login(config, selectors) {
-  const chat = await new GeminiChat(config, selectors, log).start({ headless: false });
+async function login(config, selectors, account = 'default') {
+  if (account !== 'default' && !config.accounts.includes(account)) {
+    console.error(`Unknown account "${account}". Add it to BRIDGE_ACCOUNTS first (setup.bat does this for you).`);
+    process.exit(2);
+  }
+  log(`signing in account "${account}" (profile ${profileDirFor(config, account)})`);
+  const accountConfig = { ...config, profileDir: profileDirFor(config, account), cdpUrl: account === 'default' ? config.cdpUrl : '' };
+  const chat = await new GeminiChat(accountConfig, selectors, log).start({ headless: false });
   await chat.page.goto(config.geminiUrl, { waitUntil: 'domcontentloaded' });
   console.log(
     '\nA browser window is open. Sign in to your Google account there and make sure Gemini loads.\n' +
@@ -42,16 +50,19 @@ async function login(config, selectors) {
 }
 
 async function serve(config, selectors) {
-  const chat = await new GeminiChat(config, selectors, log).start();
+  const pool = new AccountPool(config, (account, accountConfig) => new GeminiChat(accountConfig, selectors, (m) => log(`[${account}] ${m}`)), log);
+  // Start the default account now so login problems show up immediately; others start on first use.
   try {
-    await chat.open(config.geminiUrl);
+    const { backend } = await pool.get('default');
+    await backend.open(config.geminiUrl);
     log('Gemini session OK');
   } catch (err) {
     log(`warning: ${err.message}`);
   }
-  const server = createServer({ config, backend: chat, log });
+  const server = createServer({ config, pool, log });
   server.listen(config.port, config.host, () => {
-    log(`listening on http://${config.host}:${config.port}/v1  (model id: ${config.modelId}, chat mode: ${config.chatMode})`);
+    log(`listening on http://${config.host}:${config.port}/v1  (chat mode: ${config.chatMode})`);
+    for (const name of pool.names) log(`  model "${name === 'default' ? config.modelId : `${config.modelId}@${name}`}" -> account ${name}`);
     if (config.host !== '127.0.0.1' && config.host !== 'localhost' && !config.apiKey) {
       log('WARNING: bound to a non-local address without BRIDGE_API_KEY; anyone who can reach this port can use your account.');
     }
@@ -59,7 +70,7 @@ async function serve(config, selectors) {
   const shutdown = async () => {
     log('shutting down');
     server.close();
-    await chat.close();
+    await pool.closeAll();
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
@@ -72,7 +83,8 @@ if (cmd === '-h' || cmd === '--help' || cmd === 'help') {
 } else {
   const config = loadConfig();
   const selectors = loadSelectors(config.selectorsFile);
-  if (cmd === 'login') await login(config, selectors);
+  if (cmd === 'login') await login(config, selectors, process.argv[3] || 'default');
+  else if (cmd === 'accounts') for (const name of ['default', ...config.accounts]) console.log(`${name}\t${profileDirFor(config, name)}`);
   else if (cmd === 'serve') await serve(config, selectors);
   else {
     console.error(`Unknown command "${cmd}".\n\n${HELP}`);

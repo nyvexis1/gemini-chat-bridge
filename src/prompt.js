@@ -331,3 +331,44 @@ function cleanJsonReply(text, responseFormat) {
   const m = /^```[\w-]*\s*\n([\s\S]*?)\n?```$/.exec(trimmed);
   return m ? m[1].trim() : trimmed;
 }
+
+// ---------------------------------------------------------------------------
+// Retry for botched tool calls
+
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Decide whether a reply that produced no usable tool calls was probably meant
+ * to contain one. Returns a short reason, or null if the reply looks fine.
+ */
+export function brokenToolCallReason(text, req, parsed) {
+  const tools = req.tool_choice === 'none' ? [] : normalizeTools(req.tools);
+  if (!tools.length || parsed.tool_calls.length) return null;
+  const forced =
+    req.tool_choice === 'required' || (req.tool_choice && typeof req.tool_choice === 'object' && req.tool_choice.function?.name);
+  if (forced) return 'a tool call was required but none was found';
+  if (/```\s*tool_calls/i.test(text) || /"tool_calls"\s*:/.test(text)) return 'the tool_calls block was not valid JSON or used an unknown tool name';
+  if (/^##\s*Tool result/im.test(text)) return 'it wrote a tool result itself instead of stopping after the tool call';
+  const names = tools.map((t) => escapeRe(t.name)).join('|');
+  if (new RegExp(`"name"\\s*:\\s*"(${names})"`).test(text)) return 'it looked like a tool call but was not in the tool_calls format';
+  return null;
+}
+
+export function toolRetryPrompt(req, reason) {
+  const tools = normalizeTools(req.tools);
+  const forced =
+    req.tool_choice === 'required' || (req.tool_choice && typeof req.tool_choice === 'object' && req.tool_choice.function?.name);
+  return [
+    `Your last reply could not be used: ${reason}.`,
+    'If you meant to call a tool, reply again with ONLY this, using valid JSON:',
+    '',
+    '```' + TOOL_FENCE,
+    '{"tool_calls": [{"name": "TOOL_NAME", "arguments": {}}]}',
+    '```',
+    '',
+    `Valid tool names: ${tools.map((t) => t.name).join(', ')}. Do not write tool results yourself.`,
+    forced ? toolChoiceInstruction(req.tool_choice, req.parallel_tool_calls) : 'If you did not mean to call a tool, reply with your final answer and no tool_calls block.',
+  ].join('\n');
+}
