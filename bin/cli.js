@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import readline from 'node:readline/promises';
-import { loadConfig, profileDirFor } from '../src/config.js';
+import { loadConfig, profileDirFor, accountConfig } from '../src/config.js';
 import { AccountPool } from '../src/accounts.js';
 import { loadSelectors } from '../src/selectors.js';
 import { GeminiChat } from '../src/gemini.js';
@@ -22,23 +22,31 @@ Google's terms and may get your account's Gemini access restricted. Use at your 
 
 async function login(config, selectors, account = 'default') {
   if (account !== 'default' && !config.accounts.includes(account)) {
-    console.error(`Unknown account "${account}". Add it to BRIDGE_ACCOUNTS first (setup.bat does this for you).`);
+    console.error(`Unknown account "${account}". Add it to BRIDGE_ACCOUNTS first (setup does this for you).`);
     process.exit(2);
   }
-  log(`signing in account "${account}" (profile ${profileDirFor(config, account)})`);
-  const accountConfig = { ...config, profileDir: profileDirFor(config, account), cdpUrl: account === 'default' ? config.cdpUrl : '' };
-  const chat = await new GeminiChat(accountConfig, selectors, log).start({ headless: false });
-  await chat.page.goto(config.geminiUrl, { waitUntil: 'domcontentloaded' });
+  const cfg = accountConfig(config, account);
+  let chat;
+  try {
+    chat = await new GeminiChat(cfg, selectors, log).start({ headless: false, url: config.geminiUrl });
+    if (!/^https?:/.test(chat.page.url())) await chat.page.goto(config.geminiUrl, { waitUntil: 'domcontentloaded' });
+  } catch (err) {
+    log(`could not open the browser: ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(
-    '\nA browser window is open. Sign in to your Google account there and make sure Gemini loads.\n' +
-      'Press Enter here when you are done.',
+    `\nA Chrome window is open for account "${account}".\n` +
+      '  1. Sign in to your Google account in that window.\n' +
+      '  2. Make sure Gemini loads and the model you want is available.\n' +
+      '  3. Come back here and press Enter (leave the Chrome window open).\n',
   );
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  await rl.question('');
+  await rl.question('Press Enter when you are signed in... ');
   rl.close();
   try {
     await chat.open(config.geminiUrl);
-    log('logged in: OK');
+    log('signed in: OK');
     const model = await chat.selectModel();
     log(`model picker: "${model || 'unknown'}" selected`);
   } catch (err) {

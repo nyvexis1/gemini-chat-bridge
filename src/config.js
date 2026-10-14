@@ -62,6 +62,28 @@ export function profileDirFor(config, account) {
   return path.join(config.profilesRoot, account);
 }
 
+/** Debugging port for an account's Chrome. */
+export function debugPortFor(config, account) {
+  if (!account || account === 'default') return config.debugPort;
+  return config.debugPort + 1 + config.accounts.indexOf(account);
+}
+
+/** Config for one account: its own profile folder and debugging port. */
+export function accountConfig(config, account) {
+  return {
+    ...config,
+    profileDir: profileDirFor(config, account),
+    debugPort: debugPortFor(config, account),
+    cdpUrl: !account || account === 'default' ? config.cdpUrl : '',
+  };
+}
+
+function browserMode(value) {
+  const v = (value || 'chrome').toLowerCase();
+  if (v === 'chrome' || v === 'playwright') return v;
+  throw new Error(`BRIDGE_BROWSER must be "chrome" or "playwright", got "${value}"`);
+}
+
 function chatMode(value) {
   const v = (value || 'keep').toLowerCase();
   if (v === 'keep' || v === 'temporary') return v;
@@ -91,9 +113,16 @@ export function loadConfig(overrides = {}) {
     profilesRoot: env.BRIDGE_PROFILES_ROOT || path.join(os.homedir(), '.gemini-chat-bridge', 'profiles'),
     // Connect to a Chrome you already run with --remote-debugging-port instead of launching one.
     cdpUrl: env.BRIDGE_CDP_URL || '',
-    // "chrome" uses your installed Google Chrome; empty uses Playwright's Chromium.
+    // "chrome": start your normal installed Chrome and connect to it (needed for Google sign-in).
+    // "playwright": let Playwright launch the browser in automation mode (Google sign-in won't work there).
+    browser: browserMode(env.BRIDGE_BROWSER),
+    // Local debugging port for the default account's Chrome; extra accounts use the next ports up.
+    debugPort: int('BRIDGE_DEBUG_PORT', 9333),
+    // Only for BRIDGE_BROWSER=playwright: "chrome", "msedge", or empty for Playwright's Chromium.
     browserChannel: env.BRIDGE_BROWSER_CHANNEL ?? 'chrome',
     executablePath: env.BRIDGE_EXECUTABLE_PATH || '',
+    // Extra command-line flags for Chrome, separated by spaces (e.g. "--no-sandbox" when running as root on Linux).
+    chromeArgs: (env.BRIDGE_CHROME_ARGS || '').split(/\s+/).filter(Boolean),
     headless: bool('BRIDGE_HEADLESS', false),
 
     // "keep": chats are saved to your Gemini history and follow-ups continue the same chat.

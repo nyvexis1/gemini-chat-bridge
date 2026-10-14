@@ -11,6 +11,18 @@ import { GeminiChat } from '../src/gemini.js';
 import { DEFAULT_SELECTORS } from '../src/selectors.js';
 import { loadConfig } from '../src/config.js';
 import { createServer } from '../src/server.js';
+import net from 'node:net';
+import { chromium } from 'playwright';
+
+function freePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/mock-gemini.html'));
 
@@ -30,6 +42,13 @@ async function setup(t, overrides = {}) {
   const config = loadConfig({
     geminiUrl: `${siteUrl}/app`,
     profileDir,
+    // Default mode: start Chrome as a normal process and connect over its debugging port.
+    // Playwright's Chromium binary stands in for Google Chrome here.
+    browser: 'chrome',
+    executablePath: fs.existsSync(chromium.executablePath()) ? chromium.executablePath() : '',
+    debugPort: await freePort(),
+    // Chromium refuses to run as root (e.g. in CI containers) without this.
+    chromeArgs: process.getuid?.() === 0 ? ['--no-sandbox'] : [],
     browserChannel: '',
     headless: true,
     cdpUrl: '',
@@ -127,7 +146,7 @@ test('driver end-to-end against mock Gemini page', async (t) => {
 });
 
 test('temporary chat mode', async (t) => {
-  const env = await setup(t, { chatMode: 'temporary' });
+  const env = await setup(t, { chatMode: 'temporary', browser: 'playwright', executablePath: '' });
   if (!env) return;
   const { chat, post, prompts, teardown } = env;
   try {
