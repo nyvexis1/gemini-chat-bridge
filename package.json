@@ -1,0 +1,21 @@
+{
+  "name": "gemini-chat-bridge",
+  "version": "0.1.0",
+  "description": "Local OpenAI-compatible API that drives your own logged-in Gemini web chat session (bring your own plan).",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "gemini-chat-bridge": "bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js serve",
+    "login": "node bin/cli.js login",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "^1.56.1"
+  }
+}

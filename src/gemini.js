@@ -1,0 +1,316 @@
+// Drives the Gemini web app in a real browser profile that *you* are logged
+// into. No fingerprint spoofing, no automation-flag hiding, no captcha
+// solving: if Google shows a challenge or blocks the session, the bridge stops
+// and tells you.
+
+import fs from 'node:fs';
+import { chromium } from 'playwright';
+import { domToMarkdown } from './markdown.js';
+
+export class BridgeError extends Error {
+  constructor(message, status = 502, code = 'bridge_error') {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export class GeminiChat {
+  constructor(config, selectors, log = () => {}) {
+    this.config = config;
+    this.sel = selectors;
+    this.log = log;
+    this.context = null;
+    this.browser = null;
+    this.page = null;
+  }
+
+  // ---------------------------------------------------------------- lifecycle
+
+  async start({ headless = this.config.headless } = {}) {
+    const c = this.config;
+    if (c.cdpUrl) {
+      this.browser = await chromium.connectOverCDP(c.cdpUrl);
+      this.context = this.browser.contexts()[0] || (await this.browser.newContext());
+      this.log(`connected to existing browser at ${c.cdpUrl}`);
+    } else {
+      fs.mkdirSync(c.profileDir, { recursive: true });
+      const opts = { headless, viewport: null };
+      if (c.executablePath) opts.executablePath = c.executablePath;
+      else if (c.browserChannel) opts.channel = c.browserChannel;
+      try {
+        this.context = await chromium.launchPersistentContext(c.profileDir, opts);
+      } catch (err) {
+        if (opts.channel && /channel|executable|not found|install/i.test(err.message)) {
+          this.log(`could not launch channel "${opts.channel}" (${err.message.split('\n')[0]}); falling back to bundled Chromium`);
+          delete opts.channel;
+          this.context = await chromium.launchPersistentContext(c.profileDir, opts);
+        } else {
+          throw err;
+        }
+      }
+      this.log(`launched browser with profile ${c.profileDir}`);
+    }
+    // Use a dedicated tab so we never hijack one the user is working in (CDP mode).
+    this.page = await this.context.newPage();
+    return this;
+  }
+
+  async close() {
+    try {
+      await this.page?.close();
+    } catch {
+      // ignore
+    }
+    if (this.browser) await this.browser.close().catch(() => {});
+    else await this.context?.close().catch(() => {});
+  }
+
+  // ---------------------------------------------------------------- helpers
+
+  /** First selector from the list that currently matches something, or null. */
+  async resolve(key) {
+    const list = this.sel[key];
+    return this.page.evaluate((sels) => {
+      for (const s of sels) {
+        try {
+          if (document.querySelector(s)) return s;
+        } catch {
+          // invalid selector in override file; skip
+        }
+      }
+      return null;
+    }, list);
+  }
+
+  async waitFor(key, timeout = 30_000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const s = await this.resolve(key);
+      if (s) return s;
+      await sleep(250);
+    }
+    return null;
+  }
+
+  async count(key) {
+    return this.page.evaluate((sels) => {
+      for (const s of sels) {
+        const n = document.querySelectorAll(s).length;
+        if (n) return n;
+      }
+      return 0;
+    }, this.sel[key]);
+  }
+
+  async checkLoggedIn() {
+    const url = this.page.url();
+    if (/accounts\.google\.com/.test(url)) return false;
+    return !(await this.resolve('signInLink'));
+  }
+
+  async open(url) {
+    await this.page.goto(url, { waitUntil: 'domcontentloaded' });
+    if (!(await this.checkLoggedIn())) {
+      throw new BridgeError(
+        'The browser profile is not logged in to Gemini. Run `npm run login` and sign in first.',
+        401,
+        'not_logged_in',
+      );
+    }
+    const input = await this.waitFor('input', 45_000);
+    if (!input) {
+      throw new BridgeError(
+        'Could not find the Gemini prompt box. The page layout may have changed (see selectors.local.json in the README), ' +
+          'or Google is showing a challenge/consent page in the browser window.',
+        502,
+        'ui_changed',
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------- model
+
+  async currentModelText() {
+    const s = await this.resolve('currentModelLabel');
+    if (!s) return '';
+    return (await this.page.locator(s).first().innerText().catch(() => '')).trim();
+  }
+
+  /** Make sure the configured model is selected. Returns the label seen. */
+  async selectModel(label = this.config.modelLabel) {
+    if (!label) return '';
+    const want = label.toLowerCase();
+    let current = await this.currentModelText();
+    if (current.toLowerCase().includes(want)) return current;
+
+    const picker = await this.resolve('modelPickerButton');
+    const seen = [];
+    if (picker) {
+      await this.page.locator(picker).first().click();
+      const itemSel = await this.waitFor('modelPickerItem', 5_000);
+      if (itemSel) {
+        const items = this.page.locator(itemSel);
+        const n = await items.count();
+        for (let i = 0; i < n; i++) {
+          const text = (await items.nth(i).innerText().catch(() => '')).trim();
+          seen.push(text.split('\n')[0]);
+          if (text.toLowerCase().includes(want)) {
+            await items.nth(i).click();
+            await sleep(500);
+            current = await this.currentModelText();
+            return current || text;
+          }
+        }
+      }
+      await this.page.keyboard.press('Escape').catch(() => {});
+    }
+
+    const msg =
+      `Could not select a model matching "${label}" in the Gemini picker. ` +
+      (seen.length ? `Options seen: ${seen.map((s) => JSON.stringify(s)).join(', ')}. ` : 'No picker options found. ') +
+      'Check that your plan includes it, or set GEMINI_MODEL_LABEL.';
+    if (this.config.strictModel) throw new BridgeError(msg, 503, 'model_unavailable');
+    this.log(`warning: ${msg} Using "${current || 'default'}".`);
+    return current;
+  }
+
+  // ---------------------------------------------------------------- chat
+
+  async lastResponseMarkdown() {
+    // Passed as a string expression (evaluated over CDP) rather than using
+    // new Function() in the page, which Google's Trusted Types CSP would block.
+    const extract = ({ containers, contents }, toMd) => {
+      let list = [];
+      for (const s of containers) {
+        list = document.querySelectorAll(s);
+        if (list.length) break;
+      }
+      const last = list[list.length - 1];
+      if (!last) return { text: '', count: 0 };
+      let root = last;
+      for (const s of contents) {
+        const found = last.querySelector(s);
+        if (found) {
+          root = found;
+          break;
+        }
+      }
+      return { text: toMd(root), count: list.length };
+    };
+    const args = JSON.stringify({ containers: this.sel.responseContainer, contents: this.sel.responseContent });
+    return this.page.evaluate(`(${extract.toString()})(${args}, ${domToMarkdown.toString()})`);
+  }
+
+  async isGenerating() {
+    return Boolean(await this.resolve('stopButton'));
+  }
+
+  async errorText() {
+    const s = await this.resolve('errorBanner');
+    if (!s) return '';
+    return (await this.page.locator(s).last().innerText().catch(() => '')).trim();
+  }
+
+  async typePrompt(prompt) {
+    const inputSel = await this.waitFor('input', 30_000);
+    const input = this.page.locator(inputSel).first();
+    await input.click();
+    // Clear anything left over, then insert the whole prompt in one go (no per-key typing).
+    await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+    await this.page.keyboard.press('Backspace');
+    await this.page.keyboard.insertText(prompt);
+  }
+
+  async submit() {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const s = await this.resolve('sendButton');
+      if (s) {
+        await this.page.locator(s).first().click();
+        return;
+      }
+      await sleep(200);
+    }
+    // Fall back to Enter, which submits in the Gemini editor.
+    await this.page.keyboard.press('Enter');
+  }
+
+  async stopGenerating() {
+    const s = await this.resolve('stopButton');
+    if (s) await this.page.locator(s).first().click().catch(() => {});
+  }
+
+  /**
+   * Send a prompt and wait for the reply.
+   * @param {object} p
+   * @param {string} p.prompt
+   * @param {string} [p.chatUrl]   continue this chat instead of starting a new one
+   * @param {(delta: string) => void} [p.onDelta]
+   * @param {AbortSignal} [p.signal]
+   * @returns {Promise<{text: string, chatUrl: string, model: string}>}
+   */
+  async complete({ prompt, chatUrl, onDelta, signal }) {
+    const timeout = this.config.responseTimeoutMs;
+    await this.open(chatUrl || this.config.geminiUrl);
+    if (chatUrl && !this.page.url().startsWith(chatUrl.split('?')[0])) {
+      throw new BridgeError('Previous chat could not be reopened.', 409, 'chat_gone');
+    }
+    const model = await this.selectModel();
+
+    const before = await this.count('responseContainer');
+    await this.typePrompt(prompt);
+    await this.submit();
+    this.log(`prompt sent (${prompt.length} chars)${chatUrl ? ' to existing chat' : ''}`);
+
+    // Wait for a new model turn to appear.
+    const appearDeadline = Date.now() + 90_000;
+    while ((await this.count('responseContainer')) <= before) {
+      signal?.throwIfAborted();
+      const err = await this.errorText();
+      if (err) throw new BridgeError(`Gemini returned an error: ${err}`, 502, 'gemini_error');
+      if (Date.now() > appearDeadline) {
+        throw new BridgeError('Gemini did not start responding in time. Check the browser window.', 504, 'timeout');
+      }
+      await sleep(300);
+    }
+
+    let emitted = '';
+    let last = '';
+    let stableSince = Date.now();
+    const deadline = Date.now() + timeout;
+    const onAbort = () => this.stopGenerating();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const { text } = await this.lastResponseMarkdown();
+        if (text !== last) {
+          last = text;
+          stableSince = Date.now();
+          if (onDelta && text.startsWith(emitted) && text.length > emitted.length) {
+            onDelta(text.slice(emitted.length));
+            emitted = text;
+          }
+        }
+        const generating = await this.isGenerating();
+        if (!generating && last && Date.now() - stableSince > 1200) break;
+        if (!generating && !last && Date.now() - stableSince > 15_000) {
+          const err = await this.errorText();
+          throw new BridgeError(err ? `Gemini returned an error: ${err}` : 'Gemini returned an empty reply.', 502, 'empty_reply');
+        }
+        if (Date.now() > deadline) throw new BridgeError('Timed out waiting for Gemini to finish.', 504, 'timeout');
+        await sleep(250);
+      }
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
+
+    if (onDelta && last.length > emitted.length && last.startsWith(emitted)) onDelta(last.slice(emitted.length));
+    else if (onDelta && !last.startsWith(emitted)) this.log('note: rendered reply changed after streaming; streamed text may differ slightly from final');
+
+    return { text: last.trim(), chatUrl: this.page.url(), model };
+  }
+}
