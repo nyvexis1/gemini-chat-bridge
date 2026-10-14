@@ -51,6 +51,7 @@ export class GeminiChat {
     }
     // Use a dedicated tab so we never hijack one the user is working in (CDP mode).
     this.page = await this.context.newPage();
+    this.started = true;
     return this;
   }
 
