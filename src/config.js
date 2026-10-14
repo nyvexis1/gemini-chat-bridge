@@ -21,8 +21,27 @@ export function parseEnvFile(text) {
   return out;
 }
 
+/** Path of the settings file. */
+export function envFilePath() {
+  return process.env.BRIDGE_ENV_FILE || path.join(PROJECT_ROOT, 'bridge.env');
+}
+
+/** Set one KEY=value in bridge.env, keeping every other line as it is. */
+export function setEnvValue(key, value, file = envFilePath()) {
+  const lines = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(/\r?\n/) : [];
+  const line = `${key}=${value}`;
+  const i = lines.findIndex((l) => l.trim().startsWith(`${key}=`));
+  if (i === -1) {
+    while (lines.length && lines.at(-1) === '') lines.pop();
+    lines.push(line);
+  } else {
+    lines[i] = line;
+  }
+  fs.writeFileSync(file, lines.join(os.EOL).replace(/(\r?\n)*$/, '') + os.EOL);
+}
+
 function loadEnv() {
-  const file = process.env.BRIDGE_ENV_FILE || path.join(PROJECT_ROOT, 'bridge.env');
+  const file = envFilePath();
   const fromFile = fs.existsSync(file) ? parseEnvFile(fs.readFileSync(file, 'utf8')) : {};
   return { ...fromFile, ...process.env };
 }

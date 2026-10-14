@@ -142,10 +142,28 @@ opt_chat() {
 
 opt_model() {
   clear; echo
-  echo "  Model name, as it appears in Gemini's model picker. Part of the name is enough."
+  echo "  Model"
   echo "  Current: $MODEL_LABEL"; echo
-  read -rp "  New name, or Enter to keep: " v || exit 0
-  [ -n "$v" ] && { MODEL_LABEL=$v; save; }
+  echo "  1  Pick from your Gemini   Opens Gemini and lists the exact model names."
+  echo "  2  Type the name myself"
+  echo; echo "  0  Back"; echo
+  pick
+  case "$REPLY" in
+    1)
+      need_install || return
+      check_chrome || { pause; return; }
+      pick_account "Read the models from which account"
+      [ -z "$PICKED" ] && return
+      echo; echo "  Opening Gemini..."
+      node bin/cli.js models "$PICKED" --save
+      pause
+      ;;
+    2)
+      echo; echo "  Type it exactly as it appears in Gemini's model picker."
+      read -rp "  Model name, or Enter to keep: " v || exit 0
+      [ -n "$v" ] && { MODEL_LABEL=$v; save; }
+      ;;
+  esac
 }
 
 opt_port() {
@@ -252,7 +270,7 @@ while true; do
   echo "  3  Start the bridge"
   echo
   echo "  4  Chat history            [$CHAT_MODE]"
-  echo "  5  Model name              [$MODEL_LABEL]"
+  echo "  5  Model                   [$MODEL_LABEL]"
   echo "  6  Port                    [$PORT]"
   echo "  7  API key                 [$keyshow]"
   echo "  8  Browser window          [$winshow]"

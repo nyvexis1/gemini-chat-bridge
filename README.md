@@ -26,7 +26,7 @@ You need [Node.js](https://nodejs.org) (version 20 or newer) and [Google Chrome]
    - **2** to sign in to Gemini
    - **3** to start
 
-The same menu changes settings (chat history, model, port, API key, accounts). After setup you can also just double-click **`start.bat`**.
+The same menu changes settings. Use **5 Model → Pick from your Gemini** to choose the exact model name from your own Gemini, e.g. `4 Argon`. After setup you can also just double-click **`start.bat`**.
 
 ### macOS / Linux
 
@@ -85,7 +85,7 @@ Each account has its own browser and its own rate limit. The bridge never switch
 | `BRIDGE_PORT` | `8787` | Port |
 | `BRIDGE_API_KEY` | none | Key tools must send |
 | `BRIDGE_CHAT_MODE` | `keep` | `keep` or `temporary` |
-| `GEMINI_MODEL_LABEL` | `Argon` | Model name in Gemini's picker |
+| `GEMINI_MODEL_LABEL` | `Argon` | Model name in Gemini's picker. An exact name wins; otherwise the first name containing it is used. |
 | `BRIDGE_MODEL_ID` | `gemini-4-argon` | Model name tools use |
 | `BRIDGE_ACCOUNTS` | none | Extra accounts, e.g. `second,work` |
 | `BRIDGE_HEADLESS` | `false` | Hide the browser window |

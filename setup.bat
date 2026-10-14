@@ -22,7 +22,7 @@ echo   2  Sign in to Gemini
 echo   3  Start the bridge
 echo.
 echo   4  Chat history            [!CHAT_MODE!]
-echo   5  Model name              [!MODEL_LABEL!]
+echo   5  Model                   [!MODEL_LABEL!]
 echo   6  Port                    [!PORT!]
 echo   7  API key                 [!KEYSHOW!]
 echo   8  Browser window          [!WINSHOW!]
@@ -127,11 +127,39 @@ rem ------------------------------------------------------------ 5 model
 :opt5
 cls
 echo.
-echo   Model name, as it appears in Gemini's model picker. Part of the name is enough.
+echo   Model
 echo   Current: !MODEL_LABEL!
 echo.
+echo   1  Pick from your Gemini   Opens Gemini and lists the exact model names.
+echo   2  Type the name myself
+echo.
+echo   0  Back
+echo.
+choice /c 120 /n /m "  Press a number: "
+if errorlevel 3 goto :menu
+if errorlevel 2 goto :model_type
+if not exist node_modules\playwright (
+  echo   Press 1 in the main menu to install first.
+  pause
+  goto :menu
+)
+call :check_chrome
+if errorlevel 1 (
+  pause
+  goto :menu
+)
+call :pick_account "Read the models from which account"
+if "!PICKED!"=="" goto :menu
+echo.
+echo   Opening Gemini...
+node bin\cli.js models !PICKED! --save
+pause
+goto :menu
+:model_type
+echo.
+echo   Type it exactly as it appears in Gemini's model picker.
 set "NEWVAL="
-set /p "NEWVAL=  New name, or Enter to keep: "
+set /p "NEWVAL=  Model name, or Enter to keep: "
 if not "!NEWVAL!"=="" (
   set "MODEL_LABEL=!NEWVAL!"
   call :save

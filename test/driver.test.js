@@ -174,3 +174,63 @@ test('temporary chat mode', async (t) => {
     await teardown();
   }
 });
+
+test('model picker: lists exact names and prefers an exact match', async (t) => {
+  const env = await setup(t);
+  if (!env) return;
+  const { chat, teardown } = env;
+  try {
+    await chat.open(chat.config.geminiUrl);
+    assert.deepEqual(await chat.listModels(), ['Flash', '4 Argon', '4 Argon Deep Think']);
+    assert.equal(await chat.selectModel('4 Argon Deep Think'), '4 Argon Deep Think');
+    assert.equal(await chat.selectModel('4 argon'), '4 Argon', 'exact name beats a longer partial match');
+    assert.equal(await chat.selectModel('Argon'), '4 Argon', 'partial match picks the first');
+    await assert.rejects(chat.selectModel('Nope'), /Models there: "Flash", "4 Argon", "4 Argon Deep Think"/);
+  } finally {
+    await teardown();
+  }
+});
+
+test('cli: models --save writes the chosen exact name to bridge.env', async (t) => {
+  if (!fs.existsSync(chromium.executablePath())) return t.skip('no Playwright Chromium available');
+  const { spawn } = await import('node:child_process');
+  const site = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(html);
+  });
+  await new Promise((r) => site.listen(0, '127.0.0.1', r));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gcb-cli-'));
+  const envFile = path.join(dir, 'bridge.env');
+  fs.writeFileSync(envFile, 'BRIDGE_PORT=9000\nMY_LINE=1\n');
+  try {
+    const cli = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.js'), 'models', '--save'], {
+      env: {
+        ...process.env,
+        BRIDGE_ENV_FILE: envFile,
+        GEMINI_URL: `http://127.0.0.1:${site.address().port}/app`,
+        BRIDGE_PROFILE_DIR: path.join(dir, 'profile'),
+        BRIDGE_EXECUTABLE_PATH: chromium.executablePath(),
+        BRIDGE_DEBUG_PORT: String(await freePort()),
+        BRIDGE_HEADLESS: 'true',
+        BRIDGE_CHROME_ARGS: process.getuid?.() === 0 ? '--no-sandbox' : '',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    cli.stdout.on('data', (d) => {
+      out += d;
+      if (out.includes('Pick a number')) cli.stdin.end('3\n');
+    });
+    cli.stderr.on('data', (d) => (out += d));
+    const code = await new Promise((r) => cli.on('exit', r));
+    assert.equal(code, 0, out);
+    assert.match(out, /1 {2}Flash\n {2}2 {2}4 Argon\n {2}3 {2}4 Argon Deep Think/);
+    const saved = fs.readFileSync(envFile, 'utf8');
+    assert.match(saved, /^GEMINI_MODEL_LABEL=4 Argon Deep Think$/m);
+    assert.match(saved, /^BRIDGE_PORT=9000$/m);
+    assert.match(saved, /^MY_LINE=1$/m);
+  } finally {
+    site.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
