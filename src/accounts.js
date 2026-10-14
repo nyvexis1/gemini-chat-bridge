@@ -1,7 +1,7 @@
 // One browser (and one request queue) per Google account. Requests pick an
 // account with model "<model id>@<account>"; a plain model id uses "default".
 
-import { profileDirFor } from './config.js';
+import { accountConfig } from './config.js';
 import { BridgeError } from './errors.js';
 import { Limiter } from './limiter.js';
 
@@ -45,8 +45,7 @@ export class AccountPool {
     if (!entry) {
       // Store the promise so concurrent first requests share one browser launch.
       entry = (async () => {
-        const accountConfig = { ...this.config, profileDir: profileDirFor(this.config, name), cdpUrl: name === 'default' ? this.config.cdpUrl : '' };
-        const backend = this.createBackend(name, accountConfig);
+        const backend = this.createBackend(name, accountConfig(this.config, name));
         if (backend.start && !backend.started) await backend.start();
         return { backend, limiter: new Limiter(this.config) };
       })();

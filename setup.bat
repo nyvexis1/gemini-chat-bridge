@@ -58,21 +58,13 @@ if errorlevel 1 (
   pause
   goto :menu
 )
-set "CHANNEL=chrome"
-if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" goto :have_chrome
-if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" goto :have_chrome
-if exist "%LocalAppData%\Google\Chrome\Application\chrome.exe" goto :have_chrome
-echo   Google Chrome not found, downloading a browser instead...
-call npx playwright install chromium
+call :save
+echo.
+call :check_chrome
 if errorlevel 1 (
-  echo   Browser download failed, see the error above.
   pause
   goto :menu
 )
-set "CHANNEL="
-:have_chrome
-call :save
-echo.
 echo   Done. Next: press 2 to sign in.
 pause
 goto :menu
@@ -86,6 +78,11 @@ if not exist node_modules\playwright (
   goto :menu
 )
 cls
+call :check_chrome
+if errorlevel 1 (
+  pause
+  goto :menu
+)
 call :pick_account "Sign in to which account"
 if "!PICKED!"=="" goto :menu
 echo.
@@ -287,6 +284,15 @@ goto :opt9
 
 rem ------------------------------------------------------------ helpers
 
+rem Google sign-in only works in a normal Google Chrome, so require it.
+:check_chrome
+if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" exit /b 0
+if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" exit /b 0
+if exist "%LocalAppData%\Google\Chrome\Application\chrome.exe" exit /b 0
+echo   Google Chrome is not installed. It is needed to sign in to Google.
+echo   Install it from https://www.google.com/chrome and try again.
+exit /b 1
+
 rem Sets PICKED to the chosen account name, or empty for Back.
 :pick_account
 set "PICKED=default"
@@ -320,7 +326,6 @@ set "PORT=8787"
 set "API_KEY="
 set "HEADLESS=false"
 set "ACCOUNTS="
-set "CHANNEL=chrome"
 if not exist bridge.env exit /b 0
 for /f "usebackq eol=# tokens=1,* delims==" %%a in ("bridge.env") do (
   if /i "%%a"=="BRIDGE_CHAT_MODE" set "CHAT_MODE=%%b"
@@ -329,7 +334,6 @@ for /f "usebackq eol=# tokens=1,* delims==" %%a in ("bridge.env") do (
   if /i "%%a"=="BRIDGE_API_KEY" set "API_KEY=%%b"
   if /i "%%a"=="BRIDGE_HEADLESS" set "HEADLESS=%%b"
   if /i "%%a"=="BRIDGE_ACCOUNTS" set "ACCOUNTS=%%b"
-  if /i "%%a"=="BRIDGE_BROWSER_CHANNEL" set "CHANNEL=%%b"
 )
 exit /b 0
 
@@ -342,7 +346,6 @@ rem Writes the settings above to bridge.env, keeping any other lines you added.
   echo BRIDGE_PORT=!PORT!
   echo BRIDGE_HEADLESS=!HEADLESS!
   echo BRIDGE_ACCOUNTS=!ACCOUNTS!
-  echo BRIDGE_BROWSER_CHANNEL=!CHANNEL!
   if not "!API_KEY!"=="" echo BRIDGE_API_KEY=!API_KEY!
 )
 if exist bridge.env findstr /v /b /i /c:"#" /c:"BRIDGE_CHAT_MODE=" /c:"GEMINI_MODEL_LABEL=" /c:"BRIDGE_PORT=" /c:"BRIDGE_HEADLESS=" /c:"BRIDGE_ACCOUNTS=" /c:"BRIDGE_BROWSER_CHANNEL=" /c:"BRIDGE_API_KEY=" bridge.env >> bridge.env.tmp

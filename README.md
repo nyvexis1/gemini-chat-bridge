@@ -16,11 +16,12 @@ It runs on your own account and uses your plan's normal chat limits. Supports st
 
 ## Setup
 
+You need [Node.js](https://nodejs.org) (version 20 or newer) and [Google Chrome](https://www.google.com/chrome). The bridge opens your normal Chrome with its own profile, so Google sign-in works like usual.
+
 ### Windows
 
-1. Install [Node.js](https://nodejs.org) (version 20 or newer).
-2. Download this repo (**Code → Download ZIP**) and unzip it.
-3. Double-click **`setup.bat`** and press the numbers:
+1. Download this repo (**Code → Download ZIP**) and unzip it.
+2. Double-click **`setup.bat`** and press the numbers:
    - **1** to install
    - **2** to sign in to Gemini
    - **3** to start
@@ -32,10 +33,10 @@ The same menu changes settings (chat history, model, port, API key, accounts). A
 ```bash
 git clone https://github.com/nyvexis1/gemini-chat-bridge
 cd gemini-chat-bridge
-npm install
-npm run login   # sign in once, then press Enter in the terminal
-npm start
+./setup.sh
 ```
+
+Same menu: **1** install, **2** sign in, **3** start.
 
 ## Connect your tool
 
@@ -103,9 +104,11 @@ Each account has its own browser and its own rate limit. The bridge never switch
 | `GEMINI_URL` | `https://gemini.google.com/app` | Gemini app URL |
 | `BRIDGE_PROFILE_DIR` | `~/.gemini-chat-bridge/profile` | Browser profile of the default account |
 | `BRIDGE_PROFILES_ROOT` | `~/.gemini-chat-bridge/profiles` | Where extra accounts' profiles live |
-| `BRIDGE_CDP_URL` | none | Use your own running Chrome (`--remote-debugging-port`) for the default account |
-| `BRIDGE_BROWSER_CHANNEL` | `chrome` | `chrome`, `msedge`, or empty for Playwright's Chromium |
-| `BRIDGE_EXECUTABLE_PATH` | none | Path to a browser |
+| `BRIDGE_EXECUTABLE_PATH` | found automatically | Path to Chrome |
+| `BRIDGE_DEBUG_PORT` | `9333` | Local port the bridge uses to talk to Chrome (extra accounts use the next ports) |
+| `BRIDGE_CHROME_ARGS` | none | Extra Chrome flags, e.g. `--no-sandbox` when running as root on Linux |
+| `BRIDGE_CDP_URL` | none | Use a Chrome you started yourself with `--remote-debugging-port` |
+| `BRIDGE_BROWSER` | `chrome` | `playwright` lets Playwright launch the browser instead (Google sign-in doesn't work there) |
 | `BRIDGE_MAX_QUEUE` | `20` | Waiting requests before returning "busy" |
 | `BRIDGE_RESPONSE_TIMEOUT_MS` | `600000` | Longest wait for one reply |
 | `BRIDGE_REUSE_CHATS` | `true` | Continue the same chat for follow-ups |
@@ -121,7 +124,7 @@ Each account has its own browser and its own rate limit. The bridge never switch
 
 - **Context:** Google AI Pro is reported to give about 1M tokens of context in the Gemini app. Follow-ups only send new messages, so long sessions build up context in one chat.
 - **Not supported:** PDFs and audio, sampling settings like `temperature`, exact token counts (usage numbers are estimates).
-- **Security:** the bridge only listens on your own PC by default. The browser profile folders contain your Google sign-in, so keep them private.
+- **Security:** the bridge only listens on your own PC by default. The browser profile folders contain your Google sign-in, so keep them private. While it runs, programs on your PC can control the bridge's Chrome window through its local debugging port.
 
 ## When something breaks
 
@@ -139,7 +142,6 @@ Open DevTools on the Gemini tab to find the new selector, and please send a PR w
 - [ ] PDF and other file attachments
 - [ ] OpenAI Responses API endpoint
 - [ ] Optional cleanup that deletes the bridge's chats afterwards
-- [ ] `setup.sh` for macOS / Linux
 
 ## Development
 

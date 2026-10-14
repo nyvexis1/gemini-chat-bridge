@@ -8,6 +8,7 @@ import { chromium } from 'playwright';
 import crypto from 'node:crypto';
 import { domToMarkdown } from './markdown.js';
 import { BridgeError } from './errors.js';
+import { launchChrome } from './chrome.js';
 
 export { BridgeError };
 
@@ -25,44 +26,62 @@ export class GeminiChat {
 
   // ---------------------------------------------------------------- lifecycle
 
-  async start({ headless = this.config.headless } = {}) {
+  async start({ headless = this.config.headless, url } = {}) {
     const c = this.config;
     if (c.cdpUrl) {
+      // A Chrome you started yourself: only ever touch our own tab.
       this.browser = await chromium.connectOverCDP(c.cdpUrl);
       this.context = this.browser.contexts()[0] || (await this.browser.newContext());
-      this.log(`connected to existing browser at ${c.cdpUrl}`);
-    } else {
+      this.page = await this.context.newPage();
+      this.log(`connected to your Chrome at ${c.cdpUrl}`);
+    } else if (c.browser === 'playwright') {
       fs.mkdirSync(c.profileDir, { recursive: true });
       const opts = { headless, viewport: null };
       if (c.executablePath) opts.executablePath = c.executablePath;
       else if (c.browserChannel) opts.channel = c.browserChannel;
-      try {
-        this.context = await chromium.launchPersistentContext(c.profileDir, opts);
-      } catch (err) {
-        if (opts.channel && /channel|executable|not found|install/i.test(err.message)) {
-          this.log(`could not launch channel "${opts.channel}" (${err.message.split('\n')[0]}); falling back to bundled Chromium`);
-          delete opts.channel;
-          this.context = await chromium.launchPersistentContext(c.profileDir, opts);
-        } else {
-          throw err;
-        }
-      }
-      this.log(`launched browser with profile ${c.profileDir}`);
+      this.context = await chromium.launchPersistentContext(c.profileDir, opts);
+      this.page = this.context.pages()[0] || (await this.context.newPage());
+      this.log(`launched Playwright browser with profile ${c.profileDir}`);
+    } else {
+      // Normal Chrome, started as a regular process; we connect over its debugging port.
+      const { endpoint, proc } = await launchChrome({
+        executablePath: c.executablePath,
+        profileDir: c.profileDir,
+        port: c.debugPort,
+        headless,
+        url,
+        extraArgs: c.chromeArgs,
+        log: this.log,
+      });
+      this.chromeProc = proc;
+      this.ownsChrome = true;
+      this.browser = await chromium.connectOverCDP(endpoint);
+      this.context = this.browser.contexts()[0] || (await this.browser.newContext());
+      this.page = this.context.pages()[0] || (await this.context.newPage());
     }
-    // Use a dedicated tab so we never hijack one the user is working in (CDP mode).
-    this.page = await this.context.newPage();
     this.started = true;
     return this;
   }
 
   async close() {
-    try {
-      await this.page?.close();
-    } catch {
-      // ignore
+    if (this.ownsChrome) {
+      // Ask Chrome to quit normally so it saves your sign-in to the profile.
+      try {
+        const session = await this.browser.newBrowserCDPSession();
+        await session.send('Browser.close');
+      } catch {
+        this.chromeProc?.kill();
+      }
+      await this.browser.close().catch(() => {});
+      return;
     }
-    if (this.browser) await this.browser.close().catch(() => {});
-    else await this.context?.close().catch(() => {});
+    if (this.browser) {
+      // Your own Chrome (BRIDGE_CDP_URL): close our tab and disconnect, never quit it.
+      await this.page?.close().catch(() => {});
+      await this.browser.close().catch(() => {});
+      return;
+    }
+    await this.context?.close().catch(() => {});
   }
 
   // ---------------------------------------------------------------- helpers
