@@ -73,6 +73,11 @@ export class GeminiChat {
         this.chromeProc?.kill();
       }
       await this.browser.close().catch(() => {});
+      // Wait until Chrome has really exited, so its profile is free for the next start.
+      const proc = this.chromeProc;
+      if (proc && proc.exitCode === null && proc.signalCode === null) {
+        await Promise.race([new Promise((r) => proc.once('exit', r)), sleep(10_000)]);
+      }
       return;
     }
     if (this.browser) {
@@ -155,39 +160,67 @@ export class GeminiChat {
     return (await this.page.locator(s).first().innerText().catch(() => '')).trim();
   }
 
-  /** Make sure the configured model is selected. Returns the label seen. */
+  /** Open the model picker. Returns the menu items, or null if it can't be opened. */
+  async openModelPicker() {
+    const picker = await this.resolve('modelPickerButton');
+    if (!picker) return null;
+    // Clicking the button while the menu is already open would close it.
+    const openSel = await this.resolve('modelPickerItem');
+    const alreadyOpen = openSel && (await this.page.locator(openSel).first().isVisible().catch(() => false));
+    if (!alreadyOpen) await this.page.locator(picker).first().click();
+    const itemSel = await this.waitFor('modelPickerItem', 5_000);
+    if (!itemSel) {
+      await this.page.keyboard.press('Escape').catch(() => {});
+      return null;
+    }
+    const items = this.page.locator(itemSel);
+    const names = [];
+    const n = await items.count();
+    for (let i = 0; i < n; i++) {
+      // First line is the model name; later lines are descriptions.
+      names.push((await items.nth(i).innerText().catch(() => '')).trim().split('\n')[0].trim());
+    }
+    return { items, names };
+  }
+
+  /** The exact model names in Gemini's picker. */
+  async listModels() {
+    const menu = await this.openModelPicker();
+    if (menu) await this.page.keyboard.press('Escape').catch(() => {});
+    return menu ? menu.names.filter(Boolean) : [];
+  }
+
+  /** Make sure the configured model is selected. Returns its name. */
   async selectModel(label = this.config.modelLabel) {
     if (!label) return '';
-    const want = label.toLowerCase();
-    let current = await this.currentModelText();
-    if (current.toLowerCase().includes(want)) return current;
+    const want = label.trim().toLowerCase();
+    const current = await this.currentModelText();
+    if (current.toLowerCase() === want) return current;
+    if (this.lastModel?.label === want && this.lastModel.button === current) return this.lastModel.name;
 
-    const picker = await this.resolve('modelPickerButton');
-    const seen = [];
-    if (picker) {
-      await this.page.locator(picker).first().click();
-      const itemSel = await this.waitFor('modelPickerItem', 5_000);
-      if (itemSel) {
-        const items = this.page.locator(itemSel);
-        const n = await items.count();
-        for (let i = 0; i < n; i++) {
-          const text = (await items.nth(i).innerText().catch(() => '')).trim();
-          seen.push(text.split('\n')[0]);
-          if (text.toLowerCase().includes(want)) {
-            await items.nth(i).click();
-            await sleep(500);
-            current = await this.currentModelText();
-            return current || text;
-          }
-        }
+    const menu = await this.openModelPicker();
+    const names = menu?.names || [];
+    // Exact name first; otherwise the first name containing the label.
+    let index = names.findIndex((n) => n.toLowerCase() === want);
+    if (index === -1) {
+      const partial = names.map((n, i) => (n.toLowerCase().includes(want) ? i : -1)).filter((i) => i !== -1);
+      if (partial.length > 1) {
+        this.log(`note: "${label}" matches ${partial.map((i) => JSON.stringify(names[i])).join(', ')}; using the first. Set GEMINI_MODEL_LABEL to the exact name to choose.`);
       }
-      await this.page.keyboard.press('Escape').catch(() => {});
+      index = partial.length ? partial[0] : -1;
     }
+    if (index !== -1) {
+      await menu.items.nth(index).click();
+      await sleep(500);
+      this.lastModel = { label: want, name: names[index], button: await this.currentModelText() };
+      return names[index];
+    }
+    if (menu) await this.page.keyboard.press('Escape').catch(() => {});
 
     const msg =
-      `Could not select a model matching "${label}" in the Gemini picker. ` +
-      (seen.length ? `Options seen: ${seen.map((s) => JSON.stringify(s)).join(', ')}. ` : 'No picker options found. ') +
-      'Check that your plan includes it, or set GEMINI_MODEL_LABEL.';
+      `Could not find a model called "${label}" in the Gemini picker. ` +
+      (names.length ? `Models there: ${names.map((n) => JSON.stringify(n)).join(', ')}. ` : 'The picker could not be opened. ') +
+      'Run "models" in setup to choose the exact name, or check that your plan includes it.';
     if (this.config.strictModel) throw new BridgeError(msg, 503, 'model_unavailable');
     this.log(`warning: ${msg} Using "${current || 'default'}".`);
     return current;

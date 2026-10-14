@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import readline from 'node:readline/promises';
-import { loadConfig, profileDirFor, accountConfig } from '../src/config.js';
+import { loadConfig, profileDirFor, accountConfig, setEnvValue, envFilePath } from '../src/config.js';
 import { AccountPool } from '../src/accounts.js';
 import { loadSelectors } from '../src/selectors.js';
 import { GeminiChat } from '../src/gemini.js';
@@ -13,6 +13,8 @@ const HELP = `gemini-chat-bridge: local OpenAI-compatible API on top of your own
 Usage:
   gemini-chat-bridge login [account]   Open a browser window to sign in to Gemini (once per account).
   gemini-chat-bridge serve             Start the API server (default).
+  gemini-chat-bridge models [account]  List the exact model names in your Gemini picker.
+                     models --save     ...and pick the one the bridge should use.
   gemini-chat-bridge accounts          List configured accounts.
 
 Configuration is via environment variables; see README.md.
@@ -47,13 +49,52 @@ async function login(config, selectors, account = 'default') {
   try {
     await chat.open(config.geminiUrl);
     log('signed in: OK');
+    const names = await chat.listModels();
+    if (names.length) log(`models in your picker: ${names.map((n) => JSON.stringify(n)).join(', ')}`);
     const model = await chat.selectModel();
-    log(`model picker: "${model || 'unknown'}" selected`);
+    log(`"${model || 'unknown'}" selected`);
   } catch (err) {
     log(`check failed: ${err.message}`);
     process.exitCode = 1;
   } finally {
     await chat.close();
+  }
+}
+
+async function models(config, selectors, account, save) {
+  if (account !== 'default' && !config.accounts.includes(account)) {
+    console.error(`Unknown account "${account}".`);
+    process.exit(2);
+  }
+  let chat;
+  try {
+    chat = await new GeminiChat(accountConfig(config, account), selectors, log).start({ url: config.geminiUrl });
+    await chat.open(config.geminiUrl);
+    const names = await chat.listModels();
+    if (!names.length) {
+      log('could not read the model picker. Is the account signed in, and does the picker show on the Gemini page?');
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`\nModels in Gemini's picker (currently using "${config.modelLabel}"):\n`);
+    names.forEach((n, i) => console.log(`  ${i + 1}  ${n}`));
+    console.log('');
+    if (!save) return;
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = (await rl.question('Pick a number (Enter to cancel): ')).trim();
+    rl.close();
+    const pick = Number.parseInt(answer, 10);
+    if (!answer || !(pick >= 1 && pick <= names.length)) {
+      console.log('Nothing changed.');
+      return;
+    }
+    setEnvValue('GEMINI_MODEL_LABEL', names[pick - 1]);
+    console.log(`Saved: the bridge will use "${names[pick - 1]}" (${envFilePath()}).`);
+  } catch (err) {
+    log(`error: ${err.message}`);
+    process.exitCode = 1;
+  } finally {
+    await chat?.close();
   }
 }
 
@@ -92,7 +133,10 @@ if (cmd === '-h' || cmd === '--help' || cmd === 'help') {
   const config = loadConfig();
   const selectors = loadSelectors(config.selectorsFile);
   if (cmd === 'login') await login(config, selectors, process.argv[3] || 'default');
-  else if (cmd === 'accounts') for (const name of ['default', ...config.accounts]) console.log(`${name}\t${profileDirFor(config, name)}`);
+  else if (cmd === 'models') {
+    const rest = process.argv.slice(3);
+    await models(config, selectors, rest.find((a) => !a.startsWith('--')) || 'default', rest.includes('--save'));
+  } else if (cmd === 'accounts') for (const name of ['default', ...config.accounts]) console.log(`${name}\t${profileDirFor(config, name)}`);
   else if (cmd === 'serve') await serve(config, selectors);
   else {
     console.error(`Unknown command "${cmd}".\n\n${HELP}`);
