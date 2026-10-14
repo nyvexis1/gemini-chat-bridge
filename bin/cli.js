@@ -72,7 +72,12 @@ async function models(config, selectors, account, save) {
     await chat.open(config.geminiUrl);
     const names = await chat.listModels();
     if (!names.length) {
+      const report = await chat.writeDebugReport().catch(() => null);
       log('could not read the model picker. Is the account signed in, and does the picker show on the Gemini page?');
+      if (report) {
+        log(`saved a report of the page's buttons to ${report}`);
+        log('please send it in a GitHub issue so the picker can be fixed (it contains button labels only, no chats or emails).');
+      }
       process.exitCode = 1;
       return;
     }

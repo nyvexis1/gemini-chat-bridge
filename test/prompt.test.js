@@ -95,3 +95,11 @@ test('parseReply strips json fence for json response_format', () => {
   const r = parseReply('```json\n{"a":1}\n```', { response_format: { type: 'json_object' } });
   assert.equal(r.content, '{"a":1}');
 });
+
+test('modelKey treats model ids and picker names alike', async () => {
+  const { modelKey } = await import('../src/gemini.js');
+  assert.equal(modelKey('gemini-4-argon'), modelKey('4 Argon'));
+  assert.equal(modelKey('Gemini 4 Argon'), '4argon');
+  assert.ok(modelKey('4 Argon Deep Think').includes(modelKey('Argon')));
+  assert.notEqual(modelKey('3.1 Pro'), modelKey('3.8 Flash'));
+});

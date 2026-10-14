@@ -35,20 +35,34 @@ export const DEFAULT_SELECTORS = {
     'button[aria-label*="New chat" i]',
     'side-nav-action-button[data-test-id="new-chat-button"] a',
   ],
+  // If none of these match, the bridge also looks for a visible button labelled
+  // like a model ("Flash", "Pro", "Argon", ...) and marks it data-gcb-picker.
   modelPickerButton: [
     '[data-test-id="bard-mode-menu-button"]',
+    'button[data-test-id*="mode-switch" i]',
+    'button[data-test-id*="model" i]',
     'button[aria-label*="model" i]',
+    'button[aria-label*="mode picker" i]',
     'button.input-area-switch',
+    '[data-gcb-picker="1"]',
   ],
+  // Only visible matches count, so hidden menus elsewhere on the page are ignored.
   modelPickerItem: [
     '[role="menuitemradio"]',
+    '[role="menu"] [role="menuitem"]',
     '[role="menuitem"]',
+    '[role="listbox"] [role="option"]',
+    '.mat-mdc-menu-item',
     'mat-option',
+    '.cdk-overlay-container button',
   ],
   // Text of the currently selected model, used to verify selection.
   currentModelLabel: [
     '[data-test-id="bard-mode-menu-button"]',
+    'button[data-test-id*="mode-switch" i]',
+    'button[data-test-id*="model" i]',
     'button.input-area-switch',
+    '[data-gcb-picker="1"]',
   ],
   // ---- image uploads
   // A file input that is already in the page (used directly if present).

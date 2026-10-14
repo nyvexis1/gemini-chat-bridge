@@ -31,7 +31,7 @@ const tools = [{ type: 'function', function: { name: 'get_weather', parameters: 
 // 1x1 transparent PNG.
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
-async function setup(t, overrides = {}) {
+async function setup(t, overrides = {}, selectors = DEFAULT_SELECTORS) {
   const site = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(html);
@@ -58,7 +58,7 @@ async function setup(t, overrides = {}) {
     chatMode: 'keep',
     ...overrides,
   });
-  const chat = new GeminiChat(config, DEFAULT_SELECTORS);
+  const chat = new GeminiChat(config, selectors);
   try {
     await chat.start();
   } catch (err) {
@@ -232,5 +232,29 @@ test('cli: models --save writes the chosen exact name to bridge.env', async (t) 
   } finally {
     site.close();
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('model picker: falls back to finding the button by its label, and writes a debug report', async (t) => {
+  const selectors = {
+    ...DEFAULT_SELECTORS,
+    modelPickerButton: ['#not-there', '[data-gcb-picker="1"]'],
+    currentModelLabel: ['[data-gcb-picker="1"]'],
+  };
+  const env = await setup(t, {}, selectors);
+  if (!env) return;
+  const { chat, teardown } = env;
+  const report = path.join(os.tmpdir(), `gcb-report-${process.pid}.txt`);
+  try {
+    await chat.open(chat.config.geminiUrl);
+    assert.deepEqual(await chat.listModels(), ['Flash', '4 Argon', '4 Argon Deep Think']);
+    assert.equal(await chat.selectModel('gemini-4-argon'), '4 Argon', 'model ids match picker names');
+    await chat.writeDebugReport(report);
+    const text = fs.readFileSync(report, 'utf8');
+    assert.match(text, /button \|  \| bard-mode-menu-button \|/);
+    assert.match(text, /Send message/);
+  } finally {
+    fs.rmSync(report, { force: true });
+    await teardown();
   }
 });

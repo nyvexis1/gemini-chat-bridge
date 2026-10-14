@@ -4,15 +4,25 @@
 // and tells you.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { chromium } from 'playwright';
 import crypto from 'node:crypto';
 import { domToMarkdown } from './markdown.js';
 import { BridgeError } from './errors.js';
 import { launchChrome } from './chrome.js';
+import { PROJECT_ROOT } from './config.js';
 
 export { BridgeError };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Compare model names loosely: "gemini-4-argon", "Gemini 4 Argon" and "4 Argon" are the same.
+export function modelKey(name) {
+  return (name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9.]/g, '')
+    .replace(/^gemini/, '');
+}
 
 export class GeminiChat {
   constructor(config, selectors, log = () => {}) {
@@ -160,27 +170,82 @@ export class GeminiChat {
     return (await this.page.locator(s).first().innerText().catch(() => '')).trim();
   }
 
+  /**
+   * Find the model picker button: the configured selectors first, then any
+   * visible button labelled like a model, which gets marked data-gcb-picker.
+   */
+  async findPickerButton(timeout = 15_000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const s = await this.resolve('modelPickerButton');
+      if (s && (await this.page.locator(s).first().isVisible().catch(() => false))) return s;
+      const marked = await this.page.evaluate(() => {
+        const MODEL = /\b(flash|pro|argon|ultra|thinking|fast|deep think|gemini)\b/i;
+        const visible = (el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+        };
+        const inNav = (el) => el.closest('nav, [role="navigation"], side-navigation, bard-sidenav, mat-sidenav');
+        const buttons = [...document.querySelectorAll('button, [role="button"]')].filter(
+          (b) => visible(b) && !inNav(b) && MODEL.test(b.innerText || '') && (b.innerText || '').trim().length <= 40,
+        );
+        // Prefer buttons that open a menu.
+        buttons.sort((a, b) => Number(b.hasAttribute('aria-haspopup')) - Number(a.hasAttribute('aria-haspopup')));
+        if (!buttons.length) return false;
+        document.querySelectorAll('[data-gcb-picker]').forEach((e) => e.removeAttribute('data-gcb-picker'));
+        buttons[0].setAttribute('data-gcb-picker', '1');
+        return true;
+      });
+      if (marked) return '[data-gcb-picker="1"]';
+      await sleep(500);
+    }
+    return null;
+  }
+
+  /** Mark the visible menu items (data-gcb-item=i) and return their names. */
+  async visibleMenuItems() {
+    return this.page.evaluate((sels) => {
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+      };
+      document.querySelectorAll('[data-gcb-item]').forEach((e) => e.removeAttribute('data-gcb-item'));
+      for (const sel of sels) {
+        let found = [];
+        try {
+          found = [...document.querySelectorAll(sel)].filter(visible);
+        } catch {
+          continue;
+        }
+        if (!found.length) continue;
+        return found.map((el, i) => {
+          el.setAttribute('data-gcb-item', String(i));
+          // First line is the model name; later lines are descriptions.
+          return (el.innerText || '').trim().split('\n')[0].trim();
+        });
+      }
+      return [];
+    }, this.sel.modelPickerItem);
+  }
+
   /** Open the model picker. Returns the menu items, or null if it can't be opened. */
   async openModelPicker() {
-    const picker = await this.resolve('modelPickerButton');
-    if (!picker) return null;
-    // Clicking the button while the menu is already open would close it.
-    const openSel = await this.resolve('modelPickerItem');
-    const alreadyOpen = openSel && (await this.page.locator(openSel).first().isVisible().catch(() => false));
-    if (!alreadyOpen) await this.page.locator(picker).first().click();
-    const itemSel = await this.waitFor('modelPickerItem', 5_000);
-    if (!itemSel) {
+    let names = await this.visibleMenuItems();
+    if (!names.length) {
+      const picker = await this.findPickerButton();
+      if (!picker) return null;
+      await this.page.locator(picker).first().click();
+      const deadline = Date.now() + 5_000;
+      while (!names.length && Date.now() < deadline) {
+        await sleep(250);
+        names = await this.visibleMenuItems();
+      }
+    }
+    if (!names.length) {
       await this.page.keyboard.press('Escape').catch(() => {});
       return null;
     }
-    const items = this.page.locator(itemSel);
-    const names = [];
-    const n = await items.count();
-    for (let i = 0; i < n; i++) {
-      // First line is the model name; later lines are descriptions.
-      names.push((await items.nth(i).innerText().catch(() => '')).trim().split('\n')[0].trim());
-    }
-    return { items, names };
+    return { item: (i) => this.page.locator(`[data-gcb-item="${i}"]`), names };
   }
 
   /** The exact model names in Gemini's picker. */
@@ -193,37 +258,82 @@ export class GeminiChat {
   /** Make sure the configured model is selected. Returns its name. */
   async selectModel(label = this.config.modelLabel) {
     if (!label) return '';
-    const want = label.trim().toLowerCase();
+    const want = modelKey(label);
     const current = await this.currentModelText();
-    if (current.toLowerCase() === want) return current;
+    if (modelKey(current) === want) return current;
     if (this.lastModel?.label === want && this.lastModel.button === current) return this.lastModel.name;
 
     const menu = await this.openModelPicker();
     const names = menu?.names || [];
     // Exact name first; otherwise the first name containing the label.
-    let index = names.findIndex((n) => n.toLowerCase() === want);
+    let index = names.findIndex((n) => modelKey(n) === want);
     if (index === -1) {
-      const partial = names.map((n, i) => (n.toLowerCase().includes(want) ? i : -1)).filter((i) => i !== -1);
+      const partial = names.map((n, i) => (modelKey(n).includes(want) ? i : -1)).filter((i) => i !== -1);
       if (partial.length > 1) {
-        this.log(`note: "${label}" matches ${partial.map((i) => JSON.stringify(names[i])).join(', ')}; using the first. Set GEMINI_MODEL_LABEL to the exact name to choose.`);
+        this.log(`note: "${label}" matches ${partial.map((i) => JSON.stringify(names[i])).join(', ')}; using the first. Set the exact name to choose.`);
       }
       index = partial.length ? partial[0] : -1;
     }
     if (index !== -1) {
-      await menu.items.nth(index).click();
+      await menu.item(index).click();
       await sleep(500);
       this.lastModel = { label: want, name: names[index], button: await this.currentModelText() };
       return names[index];
     }
     if (menu) await this.page.keyboard.press('Escape').catch(() => {});
 
+    const report = await this.writeDebugReport().catch(() => null);
     const msg =
       `Could not find a model called "${label}" in the Gemini picker. ` +
       (names.length ? `Models there: ${names.map((n) => JSON.stringify(n)).join(', ')}. ` : 'The picker could not be opened. ') +
-      'Run "models" in setup to choose the exact name, or check that your plan includes it.';
+      'Use setup option 5 to pick the exact name.' +
+      (report && !names.length ? ` A report of the page's buttons was saved to ${report}; please send it in a GitHub issue so the picker can be fixed.` : '');
     if (this.config.strictModel) throw new BridgeError(msg, 503, 'model_unavailable');
     this.log(`warning: ${msg} Using "${current || 'default'}".`);
     return current;
+  }
+
+  /**
+   * Save the labels of the page's buttons (and any open menu) to
+   * gemini-debug.txt, to fix selectors when Gemini's layout changes.
+   * Skips the sidebar (chat titles) and anything containing an email address.
+   */
+  async writeDebugReport(file = path.join(PROJECT_ROOT, 'gemini-debug.txt')) {
+    const rows = await this.page.evaluate(() => {
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const clip = (v) => (v || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      const out = [];
+      const sel = 'button, [role="button"], [role="menuitem"], [role="menuitemradio"], [role="option"], [aria-haspopup]';
+      for (const el of document.querySelectorAll(sel)) {
+        if (!visible(el) || el.closest('nav, [role="navigation"], side-navigation, bard-sidenav, mat-sidenav')) continue;
+        const row = {
+          tag: el.tagName.toLowerCase(),
+          role: el.getAttribute('role') || '',
+          testId: el.getAttribute('data-test-id') || '',
+          aria: clip(el.getAttribute('aria-label')),
+          popup: el.getAttribute('aria-haspopup') || '',
+          cls: clip([...el.classList].slice(0, 4).join(' ')),
+          text: clip(el.innerText),
+        };
+        if (JSON.stringify(row).includes('@')) continue;
+        out.push(row);
+        if (out.length >= 200) break;
+      }
+      return out;
+    });
+    const lines = [
+      'gemini-chat-bridge debug report',
+      `time: ${new Date().toISOString()}`,
+      `page: ${this.page.url().split('?')[0]}`,
+      '',
+      'Visible buttons (tag | role | data-test-id | aria-label | aria-haspopup | class | text):',
+      ...rows.map((r) => [r.tag, r.role, r.testId, r.aria, r.popup, r.cls, r.text].join(' | ')),
+    ];
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+    return file;
   }
 
   // ---------------------------------------------------------------- chat
