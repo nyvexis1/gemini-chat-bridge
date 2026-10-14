@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Mock Gemini</title></head>
+<body>
+  <!-- Minimal stand-in for the Gemini web app's DOM, used by test/driver.test.js. -->
+  <button data-test-id="bard-mode-menu-button" id="picker">2.5 Flash</button>
+  <div id="menu" hidden>
+    <div role="menuitemradio">Flash<br><small>Fast answers</small></div>
+    <div role="menuitemradio">4 Argon<br><small>Most capable</small></div>
+  </div>
+  <div id="chat"></div>
+  <rich-textarea><div class="ql-editor" contenteditable="true" role="textbox"></div></rich-textarea>
+  <button aria-label="Temporary chat" aria-pressed="false" id="temp">Temporary chat</button>
+  <div id="previews"></div>
+  <button aria-label="Open upload file menu" id="plus">+</button>
+  <div id="upload-menu" hidden>
+    <button data-test-id="local-images-files-uploader-button" id="upload-files">Upload files</button>
+  </div>
+  <button class="send-button" aria-label="Send message">Send</button>
+  <script>
+    const picker = document.getElementById('picker');
+    const menu = document.getElementById('menu');
+    picker.onclick = () => { menu.hidden = !menu.hidden; };
+    menu.querySelectorAll('[role=menuitemradio]').forEach((item) => {
+      item.onclick = () => { picker.textContent = item.firstChild.textContent; menu.hidden = true; };
+    });
+
+    // Temporary chat toggle.
+    const temp = document.getElementById('temp');
+    temp.onclick = () => temp.setAttribute('aria-pressed', temp.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+
+    // Upload menu; like the real app, the file input only exists once you ask for it.
+    const previews = document.getElementById('previews');
+    let pending = [];
+    document.getElementById('plus').onclick = () => { document.getElementById('upload-menu').hidden = false; };
+    document.getElementById('upload-files').onclick = () => {
+      document.getElementById('upload-menu').hidden = true;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.onchange = () => {
+        for (const f of input.files) {
+          pending.push({ name: f.name, type: f.type, size: f.size });
+          const p = document.createElement('uploader-file-preview');
+          p.textContent = f.name;
+          previews.appendChild(p);
+        }
+      };
+      input.click();
+    };
+
+    const editor = document.querySelector('.ql-editor');
+    const send = document.querySelector('.send-button');
+    window.prompts = [];
+
+    function reply(prompt) {
+      if (prompt.includes('```tool_calls') && !prompt.includes('## Tool result')) {
+        return { kind: 'tool', text: 'Let me check.' };
+      }
+      return { kind: 'text', text: 'Echo: ' + prompt.length + ' chars. **Done**.' };
+    }
+
+    send.onclick = () => {
+      const prompt = editor.innerText;
+      if (!prompt.trim()) return;
+      const isTemp = temp.getAttribute('aria-pressed') === 'true';
+      window.prompts.push({ prompt, model: picker.textContent, url: location.pathname, images: pending, temporary: isTemp });
+      pending = [];
+      previews.innerHTML = '';
+      editor.innerHTML = '';
+      // Temporary chats never get a URL of their own.
+      if (!isTemp && !location.pathname.includes('/c_')) history.pushState({}, '', '/app/c_' + Math.random().toString(16).slice(2, 10));
+
+      const turn = document.createElement('model-response');
+      const md = document.createElement('div');
+      md.className = 'markdown';
+      turn.appendChild(md);
+      document.getElementById('chat').appendChild(turn);
+
+      send.classList.add('stop');
+      send.setAttribute('aria-label', 'Stop response');
+      const r = reply(prompt);
+      const words = r.text.split(' ');
+      let i = 0;
+      const p = document.createElement('p');
+      md.appendChild(p);
+      const timer = setInterval(() => {
+        if (i < words.length) {
+          p.innerHTML = words.slice(0, ++i).join(' ').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+          return;
+        }
+        clearInterval(timer);
+        if (r.kind === 'tool') {
+          md.insertAdjacentHTML('beforeend',
+            '<code-block><div class="code-block-decoration"><span>tool_calls</span><button><mat-icon>content_copy</mat-icon></button></div>' +
+            '<pre><code>{"tool_calls": [{"name": "get_weather", "arguments": {"city": "Paris"}}]}</code></pre></code-block>');
+        }
+        send.classList.remove('stop');
+        send.setAttribute('aria-label', 'Send message');
+      }, 250);
+    };
+  </script>
+</body>
+</html>
