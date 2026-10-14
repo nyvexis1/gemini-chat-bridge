@@ -167,7 +167,43 @@ export class GeminiChat {
   async currentModelText() {
     const s = await this.resolve('currentModelLabel');
     if (!s) return '';
-    return (await this.page.locator(s).first().innerText().catch(() => '')).trim();
+    return this.page
+      .evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return '';
+        // Visible text without icon ligatures like "arrow_drop_down".
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll('mat-icon, .material-icons, .google-symbols, svg').forEach((e) => e.remove());
+        const text = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text) return text;
+        // Fall back to the label, e.g. "Open mode picker, currently selected: Argon" (any language).
+        const aria = el.getAttribute('aria-label') || '';
+        return aria.includes(':') ? aria.slice(aria.lastIndexOf(':') + 1).trim() : '';
+      }, s)
+      .catch(() => '');
+  }
+
+  /**
+   * Click something Gemini may re-render at any moment. Re-finds the element and
+   * retries instead of waiting on one that was replaced.
+   * @param {() => Promise<string|null>} find  returns a selector, or null if not there (yet)
+   */
+  async clickFresh(find, attempts = 5) {
+    let lastError = null;
+    for (let i = 0; i < attempts; i++) {
+      const sel = await find();
+      if (sel) {
+        try {
+          await this.page.locator(sel).first().click({ timeout: 3_000 });
+          return true;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      await sleep(600);
+    }
+    if (lastError) this.log(`click kept failing: ${lastError.message.split('\n')[0]}`);
+    return false;
   }
 
   /**
@@ -232,9 +268,8 @@ export class GeminiChat {
   async openModelPicker() {
     let names = await this.visibleMenuItems();
     if (!names.length) {
-      const picker = await this.findPickerButton();
-      if (!picker) return null;
-      await this.page.locator(picker).first().click();
+      if (!(await this.findPickerButton())) return null;
+      if (!(await this.clickFresh(() => this.findPickerButton(3_000)))) return null;
       const deadline = Date.now() + 5_000;
       while (!names.length && Date.now() < deadline) {
         await sleep(250);
@@ -245,7 +280,14 @@ export class GeminiChat {
       await this.page.keyboard.press('Escape').catch(() => {});
       return null;
     }
-    return { item: (i) => this.page.locator(`[data-gcb-item="${i}"]`), names };
+    // Menu items can be re-rendered too: re-mark them and click the one with the same name.
+    const click = (i) =>
+      this.clickFresh(async () => {
+        const fresh = await this.visibleMenuItems();
+        const j = fresh.indexOf(names[i]);
+        return j === -1 ? null : `[data-gcb-item="${j}"]`;
+      });
+    return { click, names };
   }
 
   /** The exact model names in Gemini's picker. */
@@ -274,8 +316,16 @@ export class GeminiChat {
       }
       index = partial.length ? partial[0] : -1;
     }
+    if (index === -1) {
+      // The other way round: "gemini-4-argon" when the picker just says "Argon".
+      const contained = names
+        .map((n, i) => ({ i, key: modelKey(n) }))
+        .filter(({ key }) => key.length >= 3 && want.includes(key))
+        .sort((a, b) => b.key.length - a.key.length);
+      if (contained.length) index = contained[0].i;
+    }
     if (index !== -1) {
-      await menu.item(index).click();
+      if (!(await menu.click(index))) throw new BridgeError(`Could not click "${names[index]}" in the Gemini model picker.`, 502, 'ui_changed');
       await sleep(500);
       this.lastModel = { label: want, name: names[index], button: await this.currentModelText() };
       return names[index];
@@ -374,9 +424,9 @@ export class GeminiChat {
   }
 
   async typePrompt(prompt) {
-    const inputSel = await this.waitFor('input', 30_000);
-    const input = this.page.locator(inputSel).first();
-    await input.click();
+    if (!(await this.waitFor('input', 30_000)) || !(await this.clickFresh(() => this.resolve('input')))) {
+      throw new BridgeError('Could not click the Gemini prompt box.', 502, 'ui_changed');
+    }
     // Clear anything left over, then insert the whole prompt in one go (no per-key typing).
     await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
     await this.page.keyboard.press('Backspace');
@@ -384,15 +434,7 @@ export class GeminiChat {
   }
 
   async submit() {
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
-      const s = await this.resolve('sendButton');
-      if (s) {
-        await this.page.locator(s).first().click();
-        return;
-      }
-      await sleep(200);
-    }
+    if (await this.clickFresh(() => this.resolve('sendButton'), 15)) return;
     // Fall back to Enter, which submits in the Gemini editor.
     await this.page.keyboard.press('Enter');
   }
@@ -508,7 +550,7 @@ export class GeminiChat {
         'temporary_chat_unavailable',
       );
     }
-    await this.page.locator(s).first().click();
+    await this.clickFresh(() => this.resolve('temporaryChatButton'));
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       if (await this.isTemporaryChatActive()) return;

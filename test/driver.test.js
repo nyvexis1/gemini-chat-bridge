@@ -258,3 +258,25 @@ test('model picker: falls back to finding the button by its label, and writes a 
     await teardown();
   }
 });
+
+test('model picker: German UI, icon in the button, button re-rendered while loading', async (t) => {
+  const env = await setup(t);
+  if (!env) return;
+  const { chat, post, prompts, teardown } = env;
+  try {
+    chat.config.geminiUrl += '?de=1';
+    await chat.open(chat.config.geminiUrl);
+    assert.equal(await chat.currentModelText(), 'Fast', 'icon text is not part of the name');
+    assert.deepEqual(await chat.listModels(), ['Fast', 'Thinking', 'Argon']);
+    // The model id tools use still finds "Argon".
+    assert.equal(await chat.selectModel('gemini-4-argon'), 'Argon');
+    assert.equal(await chat.currentModelText(), 'Argon');
+
+    chat.config.modelLabel = 'gemini-4-argon';
+    const res = await (await post({ messages: [{ role: 'user', content: 'hallo' }] })).json();
+    assert.match(res.choices[0].message.content, /^Echo:/);
+    assert.equal((await prompts()).at(-1).model, 'Argon');
+  } finally {
+    await teardown();
+  }
+});

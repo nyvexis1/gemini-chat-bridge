@@ -19,11 +19,32 @@
   </div>
   <button class="send-button" aria-label="Send message">Send</button>
   <script>
-    const picker = document.getElementById('picker');
+    let picker = document.getElementById('picker');
     const menu = document.getElementById('menu');
-    picker.onclick = () => { menu.hidden = !menu.hidden; };
+    const german = new URLSearchParams(location.search).has('de');
+    const label = (name) => german ? `Modusauswahl öffnen, derzeit ausgewählt: ${name}` : '';
+
+    // ?de: German UI like the real one, with an icon inside the button, models named
+    // like the real picker, and the button re-rendered after load (as Angular does).
+    if (german) {
+      menu.innerHTML = ['Fast', 'Thinking', 'Argon']
+        .map((n) => `<div role="menuitemradio">${n}<br><small>Beschreibung</small></div>`).join('');
+    }
+    function renderPicker(name) {
+      const fresh = document.createElement('button');
+      fresh.id = 'picker';
+      fresh.setAttribute('data-test-id', 'bard-mode-menu-button');
+      fresh.setAttribute('aria-haspopup', 'true');
+      if (german) fresh.setAttribute('aria-label', label(name));
+      fresh.innerHTML = german ? `<span>${name}</span><mat-icon>arrow_drop_down</mat-icon>` : name;
+      fresh.onclick = () => { menu.hidden = !menu.hidden; };
+      picker.replaceWith(fresh);
+      picker = fresh;
+    }
+    renderPicker(german ? 'Fast' : '2.5 Flash');
+    if (german) [400, 900, 1600].forEach((ms) => setTimeout(() => renderPicker(picker.querySelector('span').textContent), ms));
     menu.querySelectorAll('[role=menuitemradio]').forEach((item) => {
-      item.onclick = () => { picker.textContent = item.firstChild.textContent; menu.hidden = true; };
+      item.onclick = () => { renderPicker(item.firstChild.textContent); menu.hidden = true; };
     });
 
     // Temporary chat toggle.
@@ -65,7 +86,7 @@
       const prompt = editor.innerText;
       if (!prompt.trim()) return;
       const isTemp = temp.getAttribute('aria-pressed') === 'true';
-      window.prompts.push({ prompt, model: picker.textContent, url: location.pathname, images: pending, temporary: isTemp });
+      window.prompts.push({ prompt, model: picker.querySelector('span')?.textContent ?? picker.textContent, url: location.pathname, images: pending, temporary: isTemp });
       pending = [];
       previews.innerHTML = '';
       editor.innerHTML = '';
