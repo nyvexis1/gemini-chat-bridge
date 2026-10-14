@@ -4,6 +4,14 @@
   "description": "Local OpenAI-compatible API that drives your own logged-in Gemini web chat session (bring your own plan).",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nyvexis1/gemini-chat-bridge.git"
+  },
+  "homepage": "https://github.com/nyvexis1/gemini-chat-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/nyvexis1/gemini-chat-bridge/issues"
+  },
   "bin": {
     "gemini-chat-bridge": "bin/cli.js"
   },

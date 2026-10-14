@@ -11,6 +11,9 @@ your harness ──OpenAI API──▶ gemini-chat-bridge (localhost) ──▶ 
 - **Keep chats or use Temporary chats:** your choice whether requests show up in your Gemini history.
 - **No evasion.** No fingerprint spoofing, no hiding automation flags, no captcha solving, no account or IP rotation. If Google shows a challenge or blocks the session, the bridge stops and tells you.
 
+> [!NOTE]
+> **Early release.** Everything is tested against a local mock of the Gemini page, but Google's real markup changes often, so the first run on the live site may need a selector tweak (see [When Gemini's UI changes](#when-geminis-ui-changes)). Please [open an issue](https://github.com/nyvexis1/gemini-chat-bridge/issues) with what broke.
+
 > [!WARNING]
 > **Unofficial, and very likely against Google's terms.** The Gemini web app isn't an API. Automating it probably violates the [Google Terms of Service](https://policies.google.com/terms), and Google has suspended access for people who wired subscriptions into third-party tools. **Your account's Gemini access could be restricted. Use at your own risk.** This project is not affiliated with or endorsed by Google.
 
@@ -25,15 +28,17 @@ your harness ──OpenAI API──▶ gemini-chat-bridge (localhost) ──▶ 
 ### Windows
 
 1. Install [Node.js](https://nodejs.org) 20 or newer.
-2. Double-click **`setup.bat`**. It installs dependencies, asks how to handle chat history (keep chats or temporary chats), the model name and the port, saves your answers to `bridge.env`, and opens a browser so you can sign in.
-3. Double-click **`start.bat`** whenever you want the API running.
+2. Download the code: **Code → Download ZIP** on GitHub (then unzip it), or `git clone https://github.com/nyvexis1/gemini-chat-bridge`.
+3. Double-click **`setup.bat`**. It installs dependencies, asks how to handle chat history (keep chats or temporary chats), the model name and the port, saves your answers to `bridge.env`, and opens a browser so you can sign in.
+4. Double-click **`start.bat`** whenever you want the API running.
 
 Run `setup.bat` again to change settings, or edit `bridge.env` directly.
 
 ### macOS / Linux
 
 ```bash
-git clone <this repo> && cd <this repo>
+git clone https://github.com/nyvexis1/gemini-chat-bridge
+cd gemini-chat-bridge
 npm install
 
 # 1. Sign in once. A browser window opens. Log in to Google, open Gemini, then press Enter in the terminal.
@@ -92,6 +97,16 @@ Examples:
 
 Only the Chat Completions API is implemented (no Responses API and no Anthropic Messages API yet).
 
+### Which tools work best
+
+How a tool asks for actions matters more than anything else here:
+
+| Works best | Works, less reliably |
+| --- | --- |
+| Tools that describe their own actions in the prompt and read them back from the reply as plain text: **Aider** (edit blocks), **Cline / Roo Code** in their default mode (XML tool tags). The bridge just passes text through, so these behave as they do with any model. | Tools that rely on native **function calling** (`tools` / `tool_calls`): opencode, Continue agent mode, Zed's agent, OpenAI SDK agents. These go through the bridge's prompted tool protocol (below), which a strong model follows most of the time but not always. |
+
+Keep in mind that **every tool call is a full chat message.** An agent that reads ten files makes about ten Gemini messages, and each one waits for the page to render, so expect a few seconds per step, and agent sessions eat into your plan's usage limits much faster than chatting does.
+
 ## How it works
 
 1. **Prompt building.** The request's messages (system, user, assistant, tool results) are flattened into one transcript and typed into a new Gemini chat. The model picker is switched to `GEMINI_MODEL_LABEL` first. If that model isn't available, the request fails rather than silently using another model (set `GEMINI_STRICT_MODEL=false` to allow fallback).
@@ -117,7 +132,8 @@ Only the Chat Completions API is implemented (no Responses API and no Anthropic 
 
 ### Limitations
 
-- Prompted tool calling is **less reliable than a native API**. The model usually follows the format, but occasionally it won't. Strong models do best.
+- Prompted tool calling is **less reliable than a native API**. Typical failures: the model describes what it would do instead of emitting the block, invents a tool result instead of stopping, or produces malformed JSON (the reply then comes back as plain text). Strong models do best.
+- Gemini's own system prompt and app features (like web search) still apply underneath, so behaviour isn't identical to the API.
 - Token `usage` numbers are rough estimates (characters ÷ 4); the web UI doesn't report real counts.
 - Images are supported; other file types (PDFs, audio) aren't yet.
 - `temperature`, `max_tokens`, `stop` and similar sampling parameters are ignored (the web UI has no such controls).
@@ -175,6 +191,18 @@ The bridge finds the prompt box, buttons, model picker, upload menu, Temporary c
 ```
 
 Each key takes a list of selectors that are tried in order. Run with the browser visible (the default), open DevTools on the Gemini tab, and inspect the element that broke. PRs updating the defaults are very welcome.
+
+## Roadmap
+
+Ideas, roughly in order. PRs welcome.
+
+- [ ] Selector fixes from real-world use, plus a `doctor` command that checks every selector against your live session
+- [ ] PDF and other file attachments
+- [ ] Anthropic Messages API (`/v1/messages`) and OpenAI Responses API endpoints
+- [ ] Retry once with a format reminder when a reply looks like a botched tool call
+- [ ] Multiple accounts you choose explicitly per request (e.g. `gemini-4-argon@work`), each in its own browser profile
+- [ ] Optional cleanup that deletes the bridge's chats from your history after a conversation ends
+- [ ] `setup.sh` for macOS / Linux
 
 ## Security notes
 
