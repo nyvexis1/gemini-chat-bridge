@@ -10,7 +10,18 @@ import crypto from 'node:crypto';
 
 export const TOOL_FENCE = 'tool_calls';
 
-export function contentToText(content) {
+export function imageUrlOf(part) {
+  if (!part || typeof part !== 'object') return null;
+  if (part.type !== 'image_url' && part.type !== 'input_image') return null;
+  const v = part.image_url;
+  return (typeof v === 'string' ? v : v?.url) || null;
+}
+
+/**
+ * @param {*} content  string or array of content parts
+ * @param {() => string} [onImage]  returns the placeholder text for the next image
+ */
+export function contentToText(content, onImage = () => '[image]') {
   if (content == null) return '';
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -18,7 +29,7 @@ export function contentToText(content) {
       .map((part) => {
         if (typeof part === 'string') return part;
         if (part.type === 'text') return part.text ?? '';
-        if (part.type === 'image_url' || part.type === 'input_image') return '[image omitted: images are not supported by this bridge]';
+        if (imageUrlOf(part)) return onImage();
         return '';
       })
       .filter(Boolean)
@@ -89,8 +100,8 @@ function formatToolCallsForTranscript(toolCalls) {
   return '```' + TOOL_FENCE + '\n' + JSON.stringify({ tool_calls: calls }) + '\n```';
 }
 
-function formatMessage(msg, toolNamesById) {
-  const text = contentToText(msg.content);
+function formatMessage(msg, toolNamesById, onImage) {
+  const text = contentToText(msg.content, onImage);
   switch (msg.role) {
     case 'system':
     case 'developer':
@@ -157,14 +168,31 @@ export function buildPrompt(req, { startIndex = 0 } = {}) {
     );
   }
 
+  // Images are uploaded as attachments in the order collectImages() returns them,
+  // so number the placeholders the same way.
+  let imageNo = 0;
+  const onImage = () => `[Image ${++imageNo} (attached)]`;
   const slice = messages.slice(startIndex);
-  sections.push(slice.map((m) => formatMessage(m, toolNamesById)).join('\n\n'));
+  sections.push(slice.map((m) => formatMessage(m, toolNamesById, onImage)).join('\n\n'));
 
   const fmt = responseFormatInstruction(req.response_format);
   if (fmt) sections.push(fmt);
   if (!continuing) sections.push('## Assistant');
 
   return sections.filter(Boolean).join('\n\n');
+}
+
+/** Image URLs (data: or http(s):) in the messages that buildPrompt() will send, in placeholder order. */
+export function collectImages(req, { startIndex = 0 } = {}) {
+  const urls = [];
+  for (const m of (req.messages || []).slice(startIndex)) {
+    if (!Array.isArray(m.content)) continue;
+    for (const part of m.content) {
+      const url = imageUrlOf(part);
+      if (url) urls.push(url);
+    }
+  }
+  return urls;
 }
 
 // ---------------------------------------------------------------------------

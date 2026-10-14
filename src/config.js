@@ -1,8 +1,33 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const env = process.env;
+export const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Minimal KEY=VALUE parser for bridge.env (written by setup.bat). Real environment variables win.
+export function parseEnvFile(text) {
+  const out = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.at(-1) === value[0]) value = value.slice(1, -1);
+    out[key] = value;
+  }
+  return out;
+}
+
+function loadEnv() {
+  const file = process.env.BRIDGE_ENV_FILE || path.join(PROJECT_ROOT, 'bridge.env');
+  const fromFile = fs.existsSync(file) ? parseEnvFile(fs.readFileSync(file, 'utf8')) : {};
+  return { ...fromFile, ...process.env };
+}
+
+const env = loadEnv();
 
 function int(name, fallback) {
   const v = env[name];
@@ -16,6 +41,12 @@ function bool(name, fallback) {
   const v = env[name];
   if (v === undefined || v === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
+}
+
+function chatMode(value) {
+  const v = (value || 'keep').toLowerCase();
+  if (v === 'keep' || v === 'temporary') return v;
+  throw new Error(`BRIDGE_CHAT_MODE must be "keep" or "temporary", got "${value}"`);
 }
 
 export function loadConfig(overrides = {}) {
@@ -41,8 +72,13 @@ export function loadConfig(overrides = {}) {
     executablePath: env.BRIDGE_EXECUTABLE_PATH || '',
     headless: bool('BRIDGE_HEADLESS', false),
 
+    // "keep": chats are saved to your Gemini history and follow-ups continue the same chat.
+    // "temporary": each new conversation opens a Gemini Temporary chat that isn't saved to history.
+    chatMode: chatMode(env.BRIDGE_CHAT_MODE),
+
     // Rate limiting. These protect your account and your quota; defaults are deliberately conservative.
-    maxConcurrency: int('BRIDGE_MAX_CONCURRENCY', 1),
+    // Requests are always handled one at a time: the bridge drives a single browser tab.
+    maxConcurrency: 1,
     minIntervalMs: int('BRIDGE_MIN_INTERVAL_MS', 3000),
     maxRequestsPerMinute: int('BRIDGE_MAX_RPM', 10),
     maxQueue: int('BRIDGE_MAX_QUEUE', 20),
@@ -51,8 +87,10 @@ export function loadConfig(overrides = {}) {
     // Continue an existing Gemini chat when a request extends a conversation the bridge already answered.
     reuseChats: bool('BRIDGE_REUSE_CHATS', true),
     maxPromptChars: int('BRIDGE_MAX_PROMPT_CHARS', 200_000),
+    maxImages: int('BRIDGE_MAX_IMAGES', 10),
+    maxImageBytes: int('BRIDGE_MAX_IMAGE_MB', 20) * 1024 * 1024,
 
-    selectorsFile: env.BRIDGE_SELECTORS_FILE || 'selectors.local.json',
+    selectorsFile: env.BRIDGE_SELECTORS_FILE || path.join(PROJECT_ROOT, 'selectors.local.json'),
     debug: bool('BRIDGE_DEBUG', false),
     ...overrides,
   };

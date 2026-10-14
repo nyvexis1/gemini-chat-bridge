@@ -3,10 +3,11 @@
 
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { buildPrompt, parseReply, TOOL_FENCE } from './prompt.js';
+import { buildPrompt, collectImages, parseReply, TOOL_FENCE } from './prompt.js';
+import { loadImages } from './images.js';
 import { ConversationCache } from './conversations.js';
 import { Limiter } from './limiter.js';
-import { BridgeError } from './gemini.js';
+import { BridgeError } from './errors.js';
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
@@ -97,7 +98,8 @@ export function createServer({ config, backend, log = () => {} }) {
   async function runCompletion(body, { onDelta, signal }) {
     const hit = config.reuseChats ? cache.lookup(body) : null;
     const attempt = async (reuse) => {
-      const prompt = buildPrompt(body, { startIndex: reuse ? reuse.startIndex : 0 });
+      const startIndex = reuse ? reuse.startIndex : 0;
+      const prompt = buildPrompt(body, { startIndex });
       if (prompt.length > config.maxPromptChars) {
         throw new BridgeError(
           `Prompt is ${prompt.length} characters, above BRIDGE_MAX_PROMPT_CHARS=${config.maxPromptChars}.`,
@@ -105,7 +107,11 @@ export function createServer({ config, backend, log = () => {} }) {
           'context_length_exceeded',
         );
       }
-      const result = await backend.complete({ prompt, chatUrl: reuse?.chatUrl, onDelta, signal });
+      const images = await loadImages(collectImages(body, { startIndex }), {
+        maxImages: config.maxImages,
+        maxBytes: config.maxImageBytes,
+      });
+      const result = await backend.complete({ prompt, chatUrl: reuse?.chatUrl, images, onDelta, signal });
       return { ...result, prompt };
     };
     return limiter.run(async () => {

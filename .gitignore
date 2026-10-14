@@ -2,3 +2,4 @@ node_modules/
 .profile/
 *.log
 selectors.local.json
+bridge.env

@@ -11,8 +11,8 @@ class FakeBackend {
     this.replies = replies;
     this.calls = [];
   }
-  async complete({ prompt, chatUrl, onDelta }) {
-    this.calls.push({ prompt, chatUrl });
+  async complete({ prompt, chatUrl, images, onDelta }) {
+    this.calls.push({ prompt, chatUrl, images });
     const text = this.replies.shift() ?? 'ok';
     if (onDelta) for (const part of text.match(/[\s\S]{1,5}/g) || []) onDelta(part);
     return { text, chatUrl: chatUrl || `https://gemini.example/app/c${this.calls.length}`, model: 'Argon' };
@@ -136,5 +136,21 @@ test('auth, host check and content-type', async () => {
     assert.equal(status, 403);
   } finally {
     await open.close();
+  }
+});
+
+test('images are loaded and passed to the backend; bad images give 400', async () => {
+  const backend = new FakeBackend(['a cat']);
+  const s = await start(backend);
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  try {
+    const ok = await post(s.base, { messages: [{ role: 'user', content: [{ type: 'text', text: 'what?' }, { type: 'image_url', image_url: { url: png } }] }] });
+    assert.equal(ok.status, 200);
+    assert.equal(backend.calls[0].images.length, 1);
+    assert.equal(backend.calls[0].images[0].mimeType, 'image/png');
+    const bad = await post(s.base, { messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'file:///etc/passwd' } }] }] });
+    assert.equal(bad.status, 400);
+  } finally {
+    await s.close();
   }
 });

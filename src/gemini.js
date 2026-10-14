@@ -5,15 +5,11 @@
 
 import fs from 'node:fs';
 import { chromium } from 'playwright';
+import crypto from 'node:crypto';
 import { domToMarkdown } from './markdown.js';
+import { BridgeError } from './errors.js';
 
-export class BridgeError extends Error {
-  constructor(message, status = 502, code = 'bridge_error') {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
+export { BridgeError };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -238,6 +234,156 @@ export class GeminiChat {
     await this.page.keyboard.press('Enter');
   }
 
+  // ---------------------------------------------------------------- images
+
+  async waitForAttachments(expected, timeout) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      if ((await this.count('attachmentPreview')) >= expected) return true;
+      await sleep(250);
+    }
+    return false;
+  }
+
+  /**
+   * Attach images to the prompt box. Tries, in order: a file input already in
+   * the page, the upload menu's file chooser, and pasting. Each attempt is
+   * verified by the attachment previews appearing; if none works the request
+   * fails rather than silently dropping images.
+   * @param {{name: string, mimeType: string, buffer: Buffer}[]} files
+   */
+  async attachImages(files) {
+    if (!files?.length) return;
+    const before = await this.count('attachmentPreview');
+    const expected = before + files.length;
+    const attempts = [];
+
+    const viaInput = async () => {
+      const s = await this.resolve('fileInput');
+      if (!s) return false;
+      await this.page.locator(s).first().setInputFiles(files);
+      return true;
+    };
+    const viaMenu = async () => {
+      const menu = await this.resolve('uploadMenuButton');
+      if (!menu) return false;
+      await this.page.locator(menu).first().click();
+      const item = await this.waitFor('uploadFilesItem', 5_000);
+      if (!item) {
+        await this.page.keyboard.press('Escape').catch(() => {});
+        return false;
+      }
+      const chooserPromise = this.page.waitForEvent('filechooser', { timeout: 10_000 });
+      await this.page.locator(item).first().click();
+      const chooser = await chooserPromise.catch(() => null);
+      if (!chooser) return false;
+      await chooser.setFiles(files);
+      return true;
+    };
+    const viaPaste = async () => {
+      const inputSel = await this.resolve('input');
+      if (!inputSel) return false;
+      const payload = files.map((f) => ({ name: f.name, type: f.mimeType, b64: f.buffer.toString('base64') }));
+      await this.page.locator(inputSel).first().click();
+      await this.page.evaluate(
+        ({ sel, payload }) => {
+          const dt = new DataTransfer();
+          for (const f of payload) {
+            const bytes = Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0));
+            dt.items.add(new File([bytes], f.name, { type: f.type }));
+          }
+          document.querySelector(sel).dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+        },
+        { sel: inputSel, payload },
+      );
+      return true;
+    };
+
+    for (const [name, fn] of [['file input', viaInput], ['upload menu', viaMenu], ['paste', viaPaste]]) {
+      let ran = false;
+      try {
+        ran = await fn();
+      } catch (err) {
+        attempts.push(`${name}: ${err.message.split('\n')[0]}`);
+        continue;
+      }
+      if (!ran) {
+        attempts.push(`${name}: not available`);
+        continue;
+      }
+      if (await this.waitForAttachments(expected, 15_000)) {
+        // Let uploads finish before sending.
+        const deadline = Date.now() + 60_000;
+        while ((await this.resolve('uploadInProgress')) && Date.now() < deadline) await sleep(300);
+        this.log(`attached ${files.length} image(s) via ${name}`);
+        return;
+      }
+      attempts.push(`${name}: no attachment preview appeared`);
+    }
+    throw new BridgeError(
+      `Could not attach ${files.length} image(s) to the Gemini prompt (${attempts.join('; ')}). ` +
+        'The upload UI may have changed; see "When Gemini\'s UI changes" in the README.',
+      502,
+      'image_upload_failed',
+    );
+  }
+
+  // ---------------------------------------------------------------- temporary chat
+
+  async isTemporaryChatActive() {
+    return Boolean(await this.resolve('temporaryChatActive'));
+  }
+
+  async enableTemporaryChat() {
+    if (await this.isTemporaryChatActive()) return;
+    const s = await this.waitFor('temporaryChatButton', 10_000);
+    if (!s) {
+      throw new BridgeError(
+        'BRIDGE_CHAT_MODE=temporary, but no Temporary chat button was found. Your account or region may not offer it, ' +
+          'or the UI changed (see selectors.local.json in the README). Refusing to continue so the chat is not saved by accident.',
+        502,
+        'temporary_chat_unavailable',
+      );
+    }
+    await this.page.locator(s).first().click();
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (await this.isTemporaryChatActive()) return;
+      await sleep(200);
+    }
+    throw new BridgeError(
+      'Clicked Temporary chat but could not confirm it is on. Refusing to continue so the chat is not saved by accident.',
+      502,
+      'temporary_chat_unavailable',
+    );
+  }
+
+  /**
+   * Get the page ready for this request. Returns the chat handle to report back.
+   * Keep mode: handles are real chat URLs. Temporary mode: temporary chats have no
+   * URL and vanish on navigation, so the handle is a token that is only valid while
+   * this tab is still showing that chat.
+   */
+  async prepareChat(chatUrl) {
+    if (this.config.chatMode === 'temporary') {
+      if (chatUrl) {
+        if (chatUrl === this.tempToken && (await this.isTemporaryChatActive())) return chatUrl;
+        throw new BridgeError('Temporary chat is gone.', 409, 'chat_gone');
+      }
+      this.tempToken = null;
+      await this.open(this.config.geminiUrl);
+      await this.enableTemporaryChat();
+      this.tempToken = 'temp:' + crypto.randomBytes(8).toString('hex');
+      return this.tempToken;
+    }
+    this.tempToken = null;
+    await this.open(chatUrl || this.config.geminiUrl);
+    if (chatUrl && !this.page.url().startsWith(chatUrl.split('?')[0])) {
+      throw new BridgeError('Previous chat could not be reopened.', 409, 'chat_gone');
+    }
+    return null;
+  }
+
   async stopGenerating() {
     const s = await this.resolve('stopButton');
     if (s) await this.page.locator(s).first().click().catch(() => {});
@@ -248,22 +394,28 @@ export class GeminiChat {
    * @param {object} p
    * @param {string} p.prompt
    * @param {string} [p.chatUrl]   continue this chat instead of starting a new one
+   * @param {{name: string, mimeType: string, buffer: Buffer}[]} [p.images]  files to attach
    * @param {(delta: string) => void} [p.onDelta]
    * @param {AbortSignal} [p.signal]
    * @returns {Promise<{text: string, chatUrl: string, model: string}>}
    */
-  async complete({ prompt, chatUrl, onDelta, signal }) {
+  async complete({ prompt, chatUrl, images = [], onDelta, signal }) {
     const timeout = this.config.responseTimeoutMs;
-    await this.open(chatUrl || this.config.geminiUrl);
-    if (chatUrl && !this.page.url().startsWith(chatUrl.split('?')[0])) {
-      throw new BridgeError('Previous chat could not be reopened.', 409, 'chat_gone');
-    }
+    const tempHandle = await this.prepareChat(chatUrl);
     const model = await this.selectModel();
+    // Selecting a model can reset the temporary-chat toggle on some layouts; re-check.
+    if (tempHandle && !(await this.isTemporaryChatActive())) {
+      throw new BridgeError('Temporary chat turned off after selecting the model. Refusing to continue.', 502, 'temporary_chat_unavailable');
+    }
 
     const before = await this.count('responseContainer');
     await this.typePrompt(prompt);
+    await this.attachImages(images);
     await this.submit();
-    this.log(`prompt sent (${prompt.length} chars)${chatUrl ? ' to existing chat' : ''}`);
+    this.log(
+      `prompt sent (${prompt.length} chars${images.length ? `, ${images.length} image(s)` : ''})` +
+        `${chatUrl ? ' to existing chat' : ''}${tempHandle ? ' [temporary chat]' : ''}`,
+    );
 
     // Wait for a new model turn to appear.
     const appearDeadline = Date.now() + 90_000;
@@ -311,6 +463,6 @@ export class GeminiChat {
     if (onDelta && last.length > emitted.length && last.startsWith(emitted)) onDelta(last.slice(emitted.length));
     else if (onDelta && !last.startsWith(emitted)) this.log('note: rendered reply changed after streaming; streamed text may differ slightly from final');
 
-    return { text: last.trim(), chatUrl: this.page.url(), model };
+    return { text: last.trim(), chatUrl: tempHandle || this.page.url(), model };
   }
 }

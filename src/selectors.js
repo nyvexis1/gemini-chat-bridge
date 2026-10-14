@@ -50,6 +50,48 @@ export const DEFAULT_SELECTORS = {
     '[data-test-id="bard-mode-menu-button"]',
     'button.input-area-switch',
   ],
+  // ---- image uploads
+  // A file input that is already in the page (used directly if present).
+  fileInput: [
+    'input[type="file"]',
+  ],
+  // The "+" / attach button next to the prompt box that opens the upload menu.
+  uploadMenuButton: [
+    'button[aria-label*="upload file menu" i]',
+    'button[aria-label*="Add files" i]',
+    'button[aria-label*="upload" i]',
+  ],
+  // The "Upload files" entry in that menu, which opens a file chooser.
+  uploadFilesItem: [
+    '[data-test-id="local-images-files-uploader-button"]',
+    'button[aria-label*="Upload files" i]',
+    '[role="menuitem"][aria-label*="upload" i]',
+  ],
+  // One element per attached file in the prompt box.
+  attachmentPreview: [
+    'uploader-file-preview',
+    'img[data-test-id="uploaded-img"]',
+    '.file-preview-container',
+  ],
+  // Visible while an attachment is still uploading.
+  uploadInProgress: [
+    'uploader-file-preview [role="progressbar"]',
+    'uploader-file-preview mat-progress-spinner',
+    '.file-preview-container [role="progressbar"]',
+  ],
+
+  // ---- temporary chat
+  temporaryChatButton: [
+    'button[aria-label*="Temporary chat" i]',
+    '[data-test-id="temp-chat-button"]',
+  ],
+  // Present only while a temporary chat is active.
+  temporaryChatActive: [
+    'button[aria-label*="Temporary chat" i][aria-pressed="true"]',
+    '[data-test-id="temp-chat-button"][aria-pressed="true"]',
+    '.temp-chat-on',
+  ],
+
   // Signs that the session is logged out.
   signInLink: [
     'a[href*="accounts.google.com/ServiceLogin"]',

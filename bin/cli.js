@@ -51,7 +51,7 @@ async function serve(config, selectors) {
   }
   const server = createServer({ config, backend: chat, log });
   server.listen(config.port, config.host, () => {
-    log(`listening on http://${config.host}:${config.port}/v1  (model id: ${config.modelId})`);
+    log(`listening on http://${config.host}:${config.port}/v1  (model id: ${config.modelId}, chat mode: ${config.chatMode})`);
     if (config.host !== '127.0.0.1' && config.host !== 'localhost' && !config.apiKey) {
       log('WARNING: bound to a non-local address without BRIDGE_API_KEY; anyone who can reach this port can use your account.');
     }

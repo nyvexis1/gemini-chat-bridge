@@ -10,6 +10,12 @@
   </div>
   <div id="chat"></div>
   <rich-textarea><div class="ql-editor" contenteditable="true" role="textbox"></div></rich-textarea>
+  <button aria-label="Temporary chat" aria-pressed="false" id="temp">Temporary chat</button>
+  <div id="previews"></div>
+  <button aria-label="Open upload file menu" id="plus">+</button>
+  <div id="upload-menu" hidden>
+    <button data-test-id="local-images-files-uploader-button" id="upload-files">Upload files</button>
+  </div>
   <button class="send-button" aria-label="Send message">Send</button>
   <script>
     const picker = document.getElementById('picker');
@@ -18,6 +24,30 @@
     menu.querySelectorAll('[role=menuitemradio]').forEach((item) => {
       item.onclick = () => { picker.textContent = item.firstChild.textContent; menu.hidden = true; };
     });
+
+    // Temporary chat toggle.
+    const temp = document.getElementById('temp');
+    temp.onclick = () => temp.setAttribute('aria-pressed', temp.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+
+    // Upload menu; like the real app, the file input only exists once you ask for it.
+    const previews = document.getElementById('previews');
+    let pending = [];
+    document.getElementById('plus').onclick = () => { document.getElementById('upload-menu').hidden = false; };
+    document.getElementById('upload-files').onclick = () => {
+      document.getElementById('upload-menu').hidden = true;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.onchange = () => {
+        for (const f of input.files) {
+          pending.push({ name: f.name, type: f.type, size: f.size });
+          const p = document.createElement('uploader-file-preview');
+          p.textContent = f.name;
+          previews.appendChild(p);
+        }
+      };
+      input.click();
+    };
 
     const editor = document.querySelector('.ql-editor');
     const send = document.querySelector('.send-button');
@@ -33,9 +63,13 @@
     send.onclick = () => {
       const prompt = editor.innerText;
       if (!prompt.trim()) return;
-      window.prompts.push({ prompt, model: picker.textContent, url: location.pathname });
+      const isTemp = temp.getAttribute('aria-pressed') === 'true';
+      window.prompts.push({ prompt, model: picker.textContent, url: location.pathname, images: pending, temporary: isTemp });
+      pending = [];
+      previews.innerHTML = '';
       editor.innerHTML = '';
-      if (!location.pathname.includes('/c_')) history.pushState({}, '', '/app/c_' + Math.random().toString(16).slice(2, 10));
+      // Temporary chats never get a URL of their own.
+      if (!isTemp && !location.pathname.includes('/c_')) history.pushState({}, '', '/app/c_' + Math.random().toString(16).slice(2, 10));
 
       const turn = document.createElement('model-response');
       const md = document.createElement('div');
